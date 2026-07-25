@@ -1,6 +1,21 @@
 import { UserButton } from '@clerk/nextjs'
 import React from 'react'
 
+const MenuOptions = [
+    {
+        name: 'Dashboard',
+        path: '/dashboard'
+    },
+    {
+        name: 'Upgrade',
+        path: '/upgrade'
+    },
+    {
+        name: 'How it works?',
+        path: '/how-it-works'
+    }
+]
+
 function AppHeader() {
   return (
     <nav className="flex w-full items-center justify-between border-t border-b border-neutral-200 px-4 py-4 dark:border-neutral-800">
@@ -11,7 +26,13 @@ function AppHeader() {
                 {/* <Button size={'lg'}>Get Started</Button> */}
                 
                 <div className="flex items-center gap-3">
-    
+                    <ul className='flex gap-5'>
+                        {MenuOptions.map((option,index) => (
+                            <li className='text-lg hover:scale-105 transition-all'>
+                                {option.name}
+                            </li>
+                        ))}
+                    </ul>
                 </div>
                 <UserButton></UserButton>
             </nav>
