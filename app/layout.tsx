@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Outfit } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from '@clerk/nextjs'
+import { ConvexClientProvider } from "./ConvexClientProvider";
 const outfit = Outfit({
   // variable: "--font-geist-sans",
   subsets: ["latin"]
@@ -29,7 +30,9 @@ export default function RootLayout({
       // className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       // className="{outfit.className}"
     >
-      <body className={outfit.className}>{children}</body>
+      <body className={outfit.className}>
+        <ConvexClientProvider>{children}</ConvexClientProvider>
+        </body>
     </html>
     </ClerkProvider>
   );
