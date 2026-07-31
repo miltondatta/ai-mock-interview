@@ -1,4 +1,3 @@
-import { ChartScatter } from "lucide-react";
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 
@@ -10,7 +9,7 @@ export const CreateNewUser = mutation({
     },
     handler: async(ctx,args) => {
         // Check if user exists
-        const user = await ctx.db.query('UserTable').filter(q=>q.eq(q.field('email'),args.email)).collect
+        const user = await ctx.db.query('UserTable').filter(q=>q.eq(q.field('email'),args.email)).collect()
         // if user not exists
         
         if(user?.length == 0)            
