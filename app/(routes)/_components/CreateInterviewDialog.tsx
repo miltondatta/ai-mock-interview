@@ -40,27 +40,31 @@ function CreateInterviewDialog() {
   }
 
   const onSubmit = async() => {
-    if(!file) return;
     setLoading(true);
-    const formData = new FormData();
-    formData.append('file',file);
+    const formData_ = new FormData();
+    if(file) formData_.append('file',file);
+    formData_.append('jobTitle',formData?.jobTitle??'');
+    formData_.append('jobDescription',formData?.jobDescription??'');
+
     try{
-        const res = await axios.post('api/generate-interview-questions',formData);
+        const res = await axios.post('api/generate-interview-questions',formData_);
         console.log(res.data);
         // Save to database
         const resp = await saveInterviewQuestion({
             questions: res.data?.questions,
-            resumeUrl: res?.data.resumeUrl,
+            resumeUrl: res.data?.resumeUrl ?? undefined,
             uid: userDetail?._id
         });
         console.log(resp);
-        
+
     }catch(e){
         console.log(e);
     }finally{
         setLoading(false);
     }
   }
+
+  const canSubmit = !!file || (!!formData?.jobTitle && !!formData?.jobDescription);
 
   return (
         <Dialog>
@@ -86,7 +90,7 @@ function CreateInterviewDialog() {
                 <DialogClose>
                     <Button variant={'ghost'}>Cancel</Button>
                 </DialogClose>
-                <Button onClick={onSubmit} disabled={loading || !file}>
+                <Button onClick={onSubmit} disabled={loading || !canSubmit}>
                    { loading&& <Loader2Icon className='animate-spin'/> }Submit</Button>
             </DialogFooter>
         </DialogContent>

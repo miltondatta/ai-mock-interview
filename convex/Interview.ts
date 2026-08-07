@@ -5,7 +5,7 @@ export const SaveInterviewQuestions = mutation({
     args: {
         questions: v.any(),
         uid: v.id('UserTable'),
-        resumeUrl: v.string()
+        resumeUrl: v.optional(v.string())
     },
     handler: async (ctx, args) => {
         const result = await ctx.db.insert('InterviewSessionTable', {

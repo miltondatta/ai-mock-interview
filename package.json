@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@arcjet/inspect": "^1.9.1",
+    "@arcjet/next": "^1.9.1",
     "@base-ui/react": "^1.6.0",
     "@clerk/nextjs": "^7.5.22",
     "@tabler/icons-react": "^3.45.0",

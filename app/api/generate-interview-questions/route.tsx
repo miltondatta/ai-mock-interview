@@ -13,21 +13,34 @@ var imagekit = new ImageKit({
 
 export async function POST(req:NextRequest) {
     const formData = await req.formData();
-    const file = formData.get('file') as File;
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
+    const file = formData.get('file') as File | null;
+    const jobTitle = formData.get('jobTitle') as string | null;
+    const jobDescription = formData.get('jobDescription') as string | null;
+    const hasFile = !!file && file.size > 0;
 
     try{
 
-        const uploadPdf = await imagekit.upload({
-            file:buffer,
-            fileName: Date.now().toString()+".pdf",
-            isPublished: true
-        });
+        let resumeUrl: string | null = null;
 
-        //Call N8N workflow
-        const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question",{
-            resumeUrl: uploadPdf?.url
+        if (hasFile) {
+            const bytes = await file.arrayBuffer();
+            const buffer = Buffer.from(bytes);
+
+            const uploadPdf = await imagekit.upload({
+                file:buffer,
+                fileName: Date.now().toString()+".pdf",
+                isPublished: true
+            });
+            resumeUrl = uploadPdf?.url;
+        }
+
+        //Call N8N workflow - same webhook handles resume-based and jobTitle/jobDescription-based generation
+        const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question", hasFile ? {
+            resumeUrl
+        } : {
+            resumeUrl: null,
+            jobTitle,
+            jobDescription
         }, {
             timeout: 280000 // stay just under the 300s proxy/maxDuration ceiling
         });
@@ -47,7 +60,7 @@ export async function POST(req:NextRequest) {
 
         return NextResponse.json({
             questions,
-            resumeUrl: uploadPdf?.url
+            resumeUrl
         });
     }catch(e){
         console.log(e);

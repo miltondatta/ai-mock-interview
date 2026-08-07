@@ -6,13 +6,13 @@ function JobDescription({onHandleInputChange}:any) {
     <div className='border rounded-2xl p-10'>
       <div>
         <label>Job Title</label>
-        <Input placeholder='Ex. Full Stack React Developer' className='mt-2' onChange={(event)=>onHandleInputChange('Job Title',event.target.value)}/>
+        <Input placeholder='Ex. Full Stack React Developer' className='mt-2' onChange={(event)=>onHandleInputChange('jobTitle',event.target.value)}/>
       </div>
       <div className='mt-6'>
         <label>Job Description</label>
         <Textarea placeholder='Enter or Paste Job Description' 
          className='h-[200px] mt-2'
-         onChange={(event)=>onHandleInputChange('Job Description', event.target.value)}
+         onChange={(event)=>onHandleInputChange('jobDescription', event.target.value)}
         />
       </div>
     </div>
