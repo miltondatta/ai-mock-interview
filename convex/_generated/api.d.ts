@@ -9,6 +9,7 @@
  */
 
 import type * as Interview from "../Interview.js";
+import type * as rateLimit from "../rateLimit.js";
 import type * as users from "../users.js";
 
 import type {
@@ -19,6 +20,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   Interview: typeof Interview;
+  rateLimit: typeof rateLimit;
   users: typeof users;
 }>;
 
@@ -48,4 +50,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};
