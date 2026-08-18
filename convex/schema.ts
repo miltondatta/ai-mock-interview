@@ -11,6 +11,9 @@ export default defineSchema({
       interviewQuestion: v.any(),
       resumeUrl: v.optional(v.string()),
       userId: v.id('UserTable'),
-      status: v.string()
-    })
+      status: v.string(),
+      tavusConversationId: v.optional(v.string()),
+      tavusConversationUrl: v.optional(v.string()),
+      transcript: v.optional(v.any())
+    }).index('by_tavusConversationId', ['tavusConversationId'])
 });

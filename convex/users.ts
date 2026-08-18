@@ -1,4 +1,4 @@
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
 export const CreateNewUser = mutation({
@@ -22,5 +22,18 @@ export const CreateNewUser = mutation({
         })
 
         return await ctx.db.get(userId);
+    }
+})
+
+// Server-side routes resolve the authenticated Clerk user's email (via currentUser())
+// and use this to find the authoritative Convex user id, instead of trusting a
+// client-supplied userId.
+export const GetUserByEmail = query({
+    args: {
+        email: v.string()
+    },
+    handler: async (ctx, args) => {
+        const users = await ctx.db.query('UserTable').filter(q => q.eq(q.field('email'), args.email)).collect();
+        return users[0] ?? null;
     }
 })

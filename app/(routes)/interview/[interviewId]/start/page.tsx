@@ -1,7 +1,7 @@
 "use client"
 
 import Image from "next/image"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import React, { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,10 +9,10 @@ import StartInterviewImg from "@/start_interview_img.jpg"
 import { useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { Id } from "@/convex/_generated/dataModel"
-import { buildInterviewKnowledgeBase, InterviewQA } from "@/utils/knowledgeBase"
 
 function StartInterviewPage() {
     const { interviewId } = useParams<{ interviewId: string }>();
+    const router = useRouter();
     const [shareEmail, setShareEmail] = useState("");
 
     const interview = useQuery(api.Interview.GetInterviewSession, {
@@ -20,11 +20,7 @@ function StartInterviewPage() {
     });
 
     const onStartNow = () => {
-        const questions = (interview?.interviewQuestion ?? []) as InterviewQA[];
-        const knowledgeBase = buildInterviewKnowledgeBase(questions);
-
-        // Streaming avatar agent isn't built yet - log the knowledge base it will be fed instead.
-        console.log("Streaming avatar knowledge base:\n" + knowledgeBase);
+        router.push(`/interview/${interviewId}/session`);
     }
 
     return (

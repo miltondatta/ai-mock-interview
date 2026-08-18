@@ -43,3 +43,5 @@ next-env.d.ts
 AGENTS.md
 CLAUDE.md
 docker*
+# clerk configuration (can include secrets)
+/.clerk/

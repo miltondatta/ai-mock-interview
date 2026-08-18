@@ -11,12 +11,6 @@ const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Interview question generation can take a while (AI generation via N8N), match the raised proxy timeout
 export const maxDuration = 300;
 
-var imagekit = new ImageKit({
-    publicKey : process.env.IMAGEKIT_URL_PUBLIC_KEY as string,
-    privateKey : process.env.IMAGEKIT_URL_PRIVATE_KEY as string,
-    urlEndpoint : process.env.IMAGEKIT_URL_ENDPOINT as string
-});
-
 // Gemini sometimes emits raw, unescaped control characters (e.g. literal newlines) inside
 // JSON string values, which JSON.parse rejects. Escape/strip control chars only while inside
 // a string literal so structural whitespace outside strings is left untouched.
@@ -77,6 +71,12 @@ export async function POST(req:NextRequest) {
         let resumeUrl: string | null = null;
 
         if (hasFile) {
+            const imagekit = new ImageKit({
+                publicKey: process.env.IMAGEKIT_URL_PUBLIC_KEY as string,
+                privateKey: process.env.IMAGEKIT_URL_PRIVATE_KEY as string,
+                urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT as string
+            });
+
             const bytes = await file.arrayBuffer();
             const buffer = Buffer.from(bytes);
 
