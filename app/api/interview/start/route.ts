@@ -49,15 +49,6 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // Reuse an already-active Tavus conversation instead of creating a duplicate
-    // (e.g. the candidate refreshed the session page).
-    if (interview.tavusConversationId && interview.tavusConversationUrl && interview.status !== "completed") {
-        return NextResponse.json({
-            conversationId: interview.tavusConversationId,
-            conversationUrl: interview.tavusConversationUrl,
-        });
-    }
-
     const tavusApiKey = process.env.TAVUS_API_KEY;
     const tavusPersonaId = process.env.TAVUS_PERSONA_ID;
     if (!tavusApiKey || !tavusPersonaId) {
@@ -66,6 +57,32 @@ export async function POST(req: NextRequest) {
             { error: "Unable to start the interview. Please try again." },
             { status: 500 }
         );
+    }
+
+    // Reuse an already-active Tavus conversation instead of creating a duplicate
+    // (e.g. the candidate refreshed the session page) - but only if Tavus itself
+    // still reports it as "active". A conversation whose room the candidate never
+    // actually joined (or that has since ended) is stale: silently handing back
+    // its URL joins an abandoned/expired room instead of a live one.
+    if (interview.tavusConversationId && interview.tavusConversationUrl && interview.status !== "completed") {
+        try {
+            const statusRes = await fetch(
+                `https://tavusapi.com/v2/conversations/${interview.tavusConversationId}`,
+                { headers: { "x-api-key": tavusApiKey } }
+            );
+            if (statusRes.ok) {
+                const statusData = await statusRes.json();
+                if (statusData?.status === "active") {
+                    return NextResponse.json({
+                        conversationId: interview.tavusConversationId,
+                        conversationUrl: interview.tavusConversationUrl,
+                    });
+                }
+            }
+        } catch (e) {
+            console.error("Failed to check existing Tavus conversation status:", e);
+        }
+        // Not active (or the status check itself failed) - fall through and create a fresh one.
     }
 
     const conversationalContext = buildTavusConversationalContext(questions);
