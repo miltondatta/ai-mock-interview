@@ -10,10 +10,11 @@ export default defineSchema({
     InterviewSessionTable:defineTable({
       interviewQuestion: v.any(),
       resumeUrl: v.optional(v.string()),
+      jobTitle: v.optional(v.string()),
+      jobDescription: v.optional(v.string()),
       userId: v.id('UserTable'),
       status: v.string(),
-      tavusConversationId: v.optional(v.string()),
-      tavusConversationUrl: v.optional(v.string()),
+      elevenlabsConversationId: v.optional(v.string()),
       transcript: v.optional(v.any())
-    }).index('by_tavusConversationId', ['tavusConversationId'])
+    })
 });

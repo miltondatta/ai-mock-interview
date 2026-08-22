@@ -57,6 +57,8 @@ function CreateInterviewDialog() {
         const resp = await saveInterviewQuestion({
             questions: res.data?.questions,
             resumeUrl: res.data?.resumeUrl ?? undefined,
+            jobTitle: formData?.jobTitle || undefined,
+            jobDescription: formData?.jobDescription || undefined,
             uid: userDetail?._id
         });
         console.log(resp);

@@ -1,4 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+
+// --- Tavus agent call paused -------------------------------------------------
+// Commented out (not removed) while switching to a different interviewer agent.
+// The Convex functions this depended on (GetInterviewByTavusConversationId,
+// SaveTranscript) and the tavusConversationId/tavusConversationUrl schema
+// fields they looked up by were removed once the interview session table was
+// cleaned up - un-pausing this route requires restoring both first.
+/*
+import { NextRequest } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
@@ -42,4 +51,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ status: "ok" });
+}
+*/
+
+export async function POST() {
+    return NextResponse.json({ status: "ignored" });
 }
