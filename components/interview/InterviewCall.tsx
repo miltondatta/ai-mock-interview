@@ -94,15 +94,19 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
         setIsEnding(true)
         try {
             conversation.endSession()
+            const feedbackMessages = messages.map((message) => ({
+                from: message.role === "candidate" ? "user" : "bot",
+                text: message.text,
+            }))
             await fetch("/api/interview/end", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ interviewId }),
+                body: JSON.stringify({ interviewId, messages: feedbackMessages }),
             })
         } catch (e) {
             console.error(e)
         } finally {
-            router.push(`/interview/${interviewId}/start`)
+            router.push("/dashboard")
         }
     }
 

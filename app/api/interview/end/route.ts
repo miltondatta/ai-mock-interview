@@ -6,6 +6,18 @@ import { Id } from "@/convex/_generated/dataModel";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
+const FEEDBACK_WEBHOOK_URL = "https://n8n.vistechsolutions.online/webhook/generate_feedback";
+
+type FeedbackMessage = { from: string; text: string };
+
+// The feedback webhook expects a single-line, single-quoted (not standard-JSON)
+// string representation of the conversation, e.g. [{'from':'bot','text':'...'}].
+function toFeedbackTranscriptString(messages: FeedbackMessage[]): string {
+    const escape = (value: string) => value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const items = messages.map((m) => `{'from':'${escape(m.from)}','text':'${escape(m.text)}'}`);
+    return `[${items.join(",")}]`;
+}
+
 export async function POST(req: NextRequest) {
     const user = await currentUser();
     if (!user) {
@@ -26,6 +38,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => null);
     const interviewId = body?.interviewId as string | undefined;
+    const feedbackMessages = Array.isArray(body?.messages) ? (body.messages as FeedbackMessage[]) : null;
     if (!interviewId) {
         return NextResponse.json({ error: "Interview not found." }, { status: 404 });
     }
@@ -94,6 +107,33 @@ export async function POST(req: NextRequest) {
             }
         } catch (e) {
             console.error("Failed to fetch ElevenLabs conversation transcript:", e);
+        }
+    }
+
+    // Best-effort feedback generation - the candidate should still land back on the
+    // dashboard and have the interview marked completed even if this fails.
+    if (feedbackMessages && feedbackMessages.length > 0) {
+        try {
+            const feedbackRes = await fetch(FEEDBACK_WEBHOOK_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ messages: toFeedbackTranscriptString(feedbackMessages) }),
+            });
+
+            if (feedbackRes.ok) {
+                const feedbackData = await feedbackRes.json();
+                // N8N returns a raw Gemini candidate object; the feedback text lives at content.parts[0].text
+                const rawFeedback = feedbackData?.content?.parts?.[0]?.text;
+                await convexClient.mutation(api.Interview.SaveInterviewFeedback, {
+                    interviewId: interviewId as Id<"InterviewSessionTable">,
+                    userId: convexUser._id,
+                    feedback: typeof rawFeedback === "string" ? rawFeedback : feedbackData,
+                });
+            } else {
+                console.error("Feedback webhook failed:", feedbackRes.status);
+            }
+        } catch (e) {
+            console.error("Failed to generate interview feedback:", e);
         }
     }
 

@@ -10,11 +10,13 @@ export default defineSchema({
     InterviewSessionTable:defineTable({
       interviewQuestion: v.any(),
       resumeUrl: v.optional(v.string()),
+      resumeFileName: v.optional(v.string()),
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
       userId: v.id('UserTable'),
       status: v.string(),
       elevenlabsConversationId: v.optional(v.string()),
-      transcript: v.optional(v.any())
+      transcript: v.optional(v.any()),
+      feedback: v.optional(v.any())
     })
 });

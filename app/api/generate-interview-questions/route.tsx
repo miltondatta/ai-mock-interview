@@ -115,6 +115,7 @@ export async function POST(req:NextRequest) {
         return NextResponse.json({
             questions,
             resumeUrl,
+            resumeFileName: hasFile ? file.name : null,
             status:200
         });
     }catch(e){
