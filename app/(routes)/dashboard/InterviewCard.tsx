@@ -1,8 +1,9 @@
 "use client"
 
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { useRouter } from 'next/navigation'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Briefcase, CheckCircle2 } from 'lucide-react'
 import React from 'react'
 import { Doc } from '@/convex/_generated/dataModel'
 
@@ -25,19 +26,25 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
   }
 
   return (
-    <div className='border rounded-2xl p-6 flex flex-col gap-4'>
-      <div className='flex justify-between items-start gap-3'>
-        <h3 className='font-bold text-lg'>{interview.jobTitle || 'Resume-based Interview'}</h3>
-        <span className='shrink-0 rounded-full bg-primary text-primary-foreground text-xs px-3 py-1 capitalize'>
+    <div className='flex flex-col gap-4 rounded-2xl border border-border bg-card p-6 transition-shadow hover:shadow-sm'>
+      <div className='flex items-start justify-between gap-3'>
+        <div className='flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary'>
+          <Briefcase className='size-5' />
+        </div>
+        <Badge variant={isCompleted ? 'success' : 'secondary'}>
+          {isCompleted && <CheckCircle2 className='size-3' />}
           {isCompleted ? 'Complete' : 'Draft'}
-        </span>
+        </Badge>
       </div>
-      <p className='text-sm text-gray-500'>
-        {isJobDescriptionType
-          ? summarize(interview.jobDescription as string)
-          : interview.resumeFileName || 'Resume'}
-      </p>
-      <div className='flex gap-3'>
+      <div>
+        <h3 className='font-semibold text-base leading-snug'>{interview.jobTitle || 'Resume-based Interview'}</h3>
+        <p className='mt-1.5 text-sm text-muted-foreground'>
+          {isJobDescriptionType
+            ? summarize(interview.jobDescription as string)
+            : interview.resumeFileName || 'Resume'}
+        </p>
+      </div>
+      <div className='mt-1 flex gap-2.5'>
         <Button onClick={onStartInterview} className='w-fit'>
           Start Interview <ArrowRight />
         </Button>

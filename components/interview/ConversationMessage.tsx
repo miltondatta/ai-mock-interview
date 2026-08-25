@@ -1,5 +1,6 @@
 "use client"
 
+import { UserIcon, BotIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface ConversationMessageProps {
@@ -12,27 +13,30 @@ function ConversationMessage({ role, text, pending }: ConversationMessageProps) 
     const isCandidate = role === "candidate"
 
     return (
-        <div className={cn("flex flex-col gap-1", isCandidate ? "items-end" : "items-start")}>
-            <span
-                className={cn(
-                    "text-xs font-medium",
-                    isCandidate
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : "text-blue-600 dark:text-blue-400"
-                )}
-            >
-                {isCandidate ? "You" : "Interviewer"}
-            </span>
+        <div className={cn("flex items-end gap-2", isCandidate ? "flex-row-reverse" : "flex-row")}>
             <div
                 className={cn(
-                    "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm",
-                    isCandidate
-                        ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
-                        : "bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-200",
-                    pending && "opacity-60"
+                    "flex size-6 shrink-0 items-center justify-center rounded-full",
+                    isCandidate ? "bg-success/15 text-success" : "bg-primary/15 text-primary"
                 )}
             >
-                {text}
+                {isCandidate ? <UserIcon className="size-3.5" /> : <BotIcon className="size-3.5" />}
+            </div>
+            <div className={cn("flex max-w-[80%] flex-col gap-1", isCandidate ? "items-end" : "items-start")}>
+                <span className={cn("text-xs font-medium", isCandidate ? "text-success" : "text-primary")}>
+                    {isCandidate ? "You" : "Interviewer"}
+                </span>
+                <div
+                    className={cn(
+                        "rounded-2xl px-4 py-2.5 text-sm",
+                        isCandidate
+                            ? "rounded-br-sm bg-success/10 text-foreground"
+                            : "rounded-bl-sm bg-primary/10 text-foreground",
+                        pending && "opacity-60"
+                    )}
+                >
+                    {text}
+                </div>
             </div>
         </div>
     )

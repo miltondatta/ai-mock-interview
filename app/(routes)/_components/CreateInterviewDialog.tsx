@@ -16,7 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import ResumeUpload from './ResumeUpload'
 import JobDescription from './JobDescription'
 import axios from 'axios'
-import { Loader2Icon } from 'lucide-react'
+import { Loader2Icon, Plus } from 'lucide-react'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import { useUserDetailContext } from '@/app/Provider'
@@ -87,16 +87,16 @@ function CreateInterviewDialog() {
   return (
         <Dialog>
         <DialogTrigger>
-            <Button>+ Create Interview</Button>
+            <Button size="lg"><Plus />Create Interview</Button>
         </DialogTrigger>
         <DialogContent className='min-w-3xl'>
             <DialogHeader>
-            <DialogTitle>Please submit following details.</DialogTitle>
+            <DialogTitle className='text-lg'>Create a new interview</DialogTitle>
             <DialogDescription>
                 Upload your resume and add the job description to generate interview questions.
             </DialogDescription>
             </DialogHeader>
-            <Tabs defaultValue="resume-upload" className="max-w-full mt-5">
+            <Tabs defaultValue="resume-upload" className="max-w-full mt-2">
                 <TabsList>
                     <TabsTrigger value="resume-upload">Resume Upload</TabsTrigger>
                     <TabsTrigger value="job-desc">Job Description</TabsTrigger>
@@ -104,7 +104,7 @@ function CreateInterviewDialog() {
                 <TabsContent value="resume-upload"><ResumeUpload setFiles = {(file:File) => setFile(file)} /></TabsContent>
                 <TabsContent value="job-desc"><JobDescription onHandleInputChange={onHandleInputChange}/></TabsContent>
             </Tabs>
-            <DialogFooter className='flex gap-6'>
+            <DialogFooter className='flex gap-3'>
                 <DialogClose>
                     <Button variant={'ghost'}>Cancel</Button>
                 </DialogClose>

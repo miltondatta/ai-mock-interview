@@ -1,11 +1,9 @@
 import React from 'react'
-import AppHeader from './_components/AppHeader';
+import AppShell from './_components/AppShell';
 
 function DashboardLayout({children}:any) {
   return (
-    <div>
-        <AppHeader />
-        {children}</div>
+    <AppShell>{children}</AppShell>
   )
 }
 

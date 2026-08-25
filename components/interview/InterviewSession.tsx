@@ -72,8 +72,11 @@ function InterviewSession({ interviewId }: InterviewSessionProps) {
     }
 
     return (
-        <div className="flex h-screen flex-col gap-4 p-4 md:p-6">
-            <h1 className="text-xl font-semibold">Interview Sessions</h1>
+        <div className="flex h-screen flex-col gap-4 bg-muted/30 p-4 md:p-6">
+            <div>
+                <p className="text-xs font-medium text-muted-foreground">Live interview session</p>
+                <h1 className="text-lg font-semibold md:text-xl">Interview in progress</h1>
+            </div>
 
             <div className="flex flex-1 overflow-hidden">
                 {status === "error" ? (

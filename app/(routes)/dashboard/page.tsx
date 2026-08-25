@@ -19,16 +19,19 @@ function Dashboard() {
   );
 
   return (
-    <div className='py-20 px-10 md:px-28 lg:px-44 xl:px-56'>
-      <div className='flex justify-between items-center'>
+    <div className='mx-auto max-w-6xl px-6 py-10 md:px-10 md:py-14'>
+      <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
         <div>
-          <h2 className='text-lg text-gray-500'>My Dashboard</h2>
-          <h2 className='text-3xl font-bold'>Welcome, {user?.fullName}</h2>
+          <p className='text-sm font-medium text-muted-foreground'>My Dashboard</p>
+          <h1 className='mt-1 text-2xl font-bold tracking-tight md:text-3xl'>
+            Welcome back{user?.fullName ? `, ${user.fullName}` : ""}
+          </h1>
         </div>
         <CreateInterviewDialog />
       </div>
+
       {interviewList && interviewList.length > 0 ? (
-        <div className='mt-14 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>
+        <div className='mt-10 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3'>
           {interviewList.map((interview) => (
             <InterviewCard key={interview._id} interview={interview} />
           ))}

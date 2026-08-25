@@ -1,41 +1,29 @@
-import { UserButton } from '@clerk/nextjs'
-import React from 'react'
+"use client"
 
-const MenuOptions = [
-    {
-        name: 'Dashboard',
-        path: '/dashboard'
-    },
-    {
-        name: 'Upgrade',
-        path: '/upgrade'
-    },
-    {
-        name: 'How it works?',
-        path: '/how-it-works'
-    }
-]
+import React from "react"
+import { UserButton } from "@clerk/nextjs"
+import { Menu } from "lucide-react"
 
-function AppHeader() {
+interface AppHeaderProps {
+  onMenuClick: () => void
+}
+
+function AppHeader({ onMenuClick }: AppHeaderProps) {
   return (
-    <nav className="flex w-full items-center justify-between border-t border-b border-neutral-200 px-4 py-4 dark:border-neutral-800">
-                <div className="flex items-center gap-2">
-                    <img src={'/logo.svg'} alt='logo' width={30} height={30}/>
-                    <h1 className="text-base font-bold md:text-2xl">AI Mock Interview</h1>
-                </div>
-                {/* <Button size={'lg'}>Get Started</Button> */}
-                
-                <div className="flex items-center gap-3">
-                    <ul className='flex gap-5'>
-                        {MenuOptions.map((option,index) => (
-                            <li className='text-lg hover:scale-105 transition-all'>
-                                {option.name}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-                <UserButton></UserButton>
-            </nav>
+    <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-background/95 px-4 py-3 backdrop-blur-sm lg:hidden">
+      <div className="flex items-center gap-2.5">
+        <button
+          onClick={onMenuClick}
+          aria-label="Open menu"
+          className="flex size-9 items-center justify-center rounded-lg text-foreground hover:bg-muted"
+        >
+          <Menu className="size-5" />
+        </button>
+        <img src="/logo.svg" alt="" width={26} height={26} className="rounded-md" />
+        <span className="text-sm font-bold">AI Mock Interview</span>
+      </div>
+      <UserButton appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
+    </header>
   )
 }
 

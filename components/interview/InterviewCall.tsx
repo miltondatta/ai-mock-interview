@@ -3,6 +3,7 @@
 import { useEffect, useReducer, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useConversation } from "@elevenlabs/react"
+import { MicIcon } from "lucide-react"
 import {
     Dialog,
     DialogContent,
@@ -112,12 +113,18 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
 
     if (!hasJoined) {
         return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-muted/30 p-8 text-center">
-                <p className="text-sm text-muted-foreground">
-                    You&apos;re about to join a live interview call. Make sure your microphone is ready.
-                </p>
+            <div className="flex h-full w-full flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card p-8 text-center">
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <MicIcon className="size-6" />
+                </div>
+                <div>
+                    <h2 className="text-base font-semibold">Ready to join?</h2>
+                    <p className="mt-1.5 max-w-sm text-sm text-muted-foreground">
+                        You&apos;re about to join a live interview call. Make sure your microphone is ready.
+                    </p>
+                </div>
                 {joinError && <p className="text-sm text-destructive">{joinError}</p>}
-                <Button onClick={handleJoin} disabled={isJoining}>
+                <Button size="lg" onClick={handleJoin} disabled={isJoining}>
                     {isJoining ? "Joining..." : "Join Interview"}
                 </Button>
             </div>

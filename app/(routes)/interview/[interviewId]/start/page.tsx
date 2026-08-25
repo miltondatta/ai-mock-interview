@@ -24,22 +24,25 @@ function StartInterviewPage() {
     }
 
     return (
-        <div className="flex justify-center items-center py-20 px-10">
-            <div data-interview-id={interviewId} className="w-full max-w-md flex flex-col items-center rounded-2xl border border-border p-8">
-                <div className="relative h-48 w-full overflow-hidden rounded-xl">
+        <div className="flex min-h-[calc(100vh-57px)] items-center justify-center px-6 py-16 lg:min-h-screen">
+            <div data-interview-id={interviewId} className="w-full max-w-md flex flex-col items-center rounded-3xl border border-border bg-card p-8 shadow-sm">
+                <div className="relative h-48 w-full overflow-hidden rounded-2xl">
                     <Image src={StartInterviewImg} alt="Start Interview" fill className="object-cover" />
                 </div>
 
-                <h2 className="mt-6 text-2xl font-bold text-center">Ready for Interview?</h2>
+                <h2 className="mt-6 text-2xl font-bold text-center">Ready for your interview?</h2>
+                <p className="mt-1.5 text-sm text-muted-foreground text-center">
+                    You&apos;ll join a live conversation with your AI interviewer.
+                </p>
 
-                <Button size="lg" variant="outline" className="mt-4" onClick={onStartNow} disabled={!interview}>
+                <Button size="lg" className="mt-6 w-full" onClick={onStartNow} disabled={!interview}>
                     Start Now
                 </Button>
 
                 <hr className="my-8 w-full border-border" />
 
                 <p className="text-sm text-muted-foreground text-center">
-                    Want to sent interview link to someone?
+                    Want to send this interview link to someone?
                 </p>
 
                 <div className="mt-4 flex w-full gap-3">

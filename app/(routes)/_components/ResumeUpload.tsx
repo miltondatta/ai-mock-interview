@@ -10,7 +10,7 @@ function ResumeUpload({setFiles}:any) {
         console.log(files[0]);
     };
     return (
-        <div className="w-full max-w-4xl mx-auto min-h-96 border border-dashed bg-white dark:bg-black border-neutral-200 dark:border-neutral-800 rounded-2xl">
+        <div className="w-full max-w-4xl mx-auto">
             <FileUpload onChange={handleFileUpload} />
         </div>
     )

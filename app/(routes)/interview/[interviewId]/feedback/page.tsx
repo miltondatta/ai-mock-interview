@@ -14,6 +14,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 
 type ParsedFeedback = {
     feedback?: string
@@ -46,6 +47,11 @@ function parseFeedback(raw: unknown): ParsedFeedback {
                 if (typeof value === "string" && value.trim()) return value
                 if (typeof value === "number") return String(value)
                 if (Array.isArray(value) && value.length) return value.map((item) => `• ${item}`).join("\n")
+                if (typeof value === "object" && Object.keys(value as object).length) {
+                    return Object.entries(value as Record<string, unknown>)
+                        .map(([k, v]) => `${k}: ${v}`)
+                        .join("\n")
+                }
             }
             return undefined
         }
@@ -87,7 +93,7 @@ function InterviewFeedbackPage() {
                     </DialogDescription>
                 </DialogHeader>
 
-                <div className="flex flex-col gap-5 py-2">
+                <div className="flex flex-col gap-6 py-2">
                     {interview === undefined && (
                         <p className="text-sm text-muted-foreground">Loading feedback...</p>
                     )}
@@ -96,6 +102,23 @@ function InterviewFeedbackPage() {
                         <p className="text-sm text-muted-foreground">
                             Feedback is not available for this interview yet.
                         </p>
+                    )}
+
+                    {parsed.rating && (
+                        <section>
+                            <h3 className="text-xs font-semibold tracking-wide text-primary uppercase">
+                                Rating
+                            </h3>
+                            {parsed.rating.length <= 12 ? (
+                                <Badge variant="success" className="mt-2 px-3 py-1 text-xs">
+                                    {parsed.rating}
+                                </Badge>
+                            ) : (
+                                <p className="mt-1.5 text-sm whitespace-pre-wrap text-foreground/90">
+                                    {parsed.rating}
+                                </p>
+                            )}
+                        </section>
                     )}
 
                     {parsed.feedback && (
@@ -117,23 +140,6 @@ function InterviewFeedbackPage() {
                             <p className="mt-1.5 text-sm whitespace-pre-wrap text-foreground/90">
                                 {parsed.suggestions}
                             </p>
-                        </section>
-                    )}
-
-                    {parsed.rating && (
-                        <section>
-                            <h3 className="text-xs font-semibold tracking-wide text-primary uppercase">
-                                Rating
-                            </h3>
-                            {parsed.rating.length <= 12 ? (
-                                <span className="mt-1.5 inline-flex w-fit rounded-full bg-primary px-3 py-1 text-xs text-primary-foreground">
-                                    {parsed.rating}
-                                </span>
-                            ) : (
-                                <p className="mt-1.5 text-sm whitespace-pre-wrap text-foreground/90">
-                                    {parsed.rating}
-                                </p>
-                            )}
                         </section>
                     )}
                 </div>
