@@ -16,7 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import ResumeUpload from './ResumeUpload'
 import JobDescription from './JobDescription'
 import axios from 'axios'
-import { Loader2Icon, Plus } from 'lucide-react'
+import { ArrowRight, CheckCircle2, FileText, Loader2Icon, Plus, Sparkles, UploadCloud } from 'lucide-react'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import { useUserDetailContext } from '@/app/Provider'
@@ -86,32 +86,50 @@ function CreateInterviewDialog() {
 
   return (
         <Dialog>
-        <DialogTrigger>
-            <Button size="lg"><Plus />Create Interview</Button>
+        <DialogTrigger render={<Button size="lg" />}>
+            <Plus />Create Interview
         </DialogTrigger>
-        <DialogContent className='min-w-3xl'>
-            <DialogHeader>
-            <DialogTitle className='text-lg'>Create a new interview</DialogTitle>
-            <DialogDescription>
-                Upload your resume and add the job description to generate interview questions.
-            </DialogDescription>
+        <DialogContent className='w-full max-w-2xl gap-0 overflow-hidden p-0 sm:max-w-2xl'>
+            <DialogHeader className='gap-0 border-b border-border bg-gradient-to-br from-primary/15 via-primary/5 to-transparent px-6 py-6 text-left'>
+                <div className='flex items-center gap-3.5'>
+                    <div className='flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm'>
+                        <Sparkles className='size-5' />
+                    </div>
+                    <div>
+                        <DialogTitle className='text-lg'>Create a new interview</DialogTitle>
+                        <DialogDescription className='mt-0.5'>
+                            Upload your resume and add the job description to generate interview questions.
+                        </DialogDescription>
+                    </div>
+                </div>
             </DialogHeader>
-            <Tabs defaultValue="resume-upload" className="max-w-full mt-2">
-                <TabsList>
-                    <TabsTrigger value="resume-upload">Resume Upload</TabsTrigger>
-                    <TabsTrigger value="job-desc">Job Description</TabsTrigger>
-                </TabsList>
-                <TabsContent value="resume-upload"><ResumeUpload setFiles = {(file:File) => setFile(file)} /></TabsContent>
-                <TabsContent value="job-desc"><JobDescription onHandleInputChange={onHandleInputChange}/></TabsContent>
-            </Tabs>
-            <DialogFooter className='flex gap-3'>
-                <DialogClose>
-                    <Button variant={'ghost'}>Cancel</Button>
+
+            <div className='px-6 py-5'>
+                <Tabs defaultValue="resume-upload" className="max-w-full">
+                    <TabsList className='w-full'>
+                        <TabsTrigger value="resume-upload"><UploadCloud />Resume Upload</TabsTrigger>
+                        <TabsTrigger value="job-desc"><FileText />Job Description</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="resume-upload" className='mt-4'><ResumeUpload setFiles = {(file:File) => setFile(file)} /></TabsContent>
+                    <TabsContent value="job-desc" className='mt-4'><JobDescription onHandleInputChange={onHandleInputChange}/></TabsContent>
+                </Tabs>
+
+                {interviewId && (
+                    <div className='mt-4 flex items-center gap-2 rounded-lg bg-success/10 px-3.5 py-2.5 text-sm font-medium text-success'>
+                        <CheckCircle2 className='size-4' />
+                        Questions are ready — start the interview whenever you're set.
+                    </div>
+                )}
+            </div>
+
+            <DialogFooter className='mx-0 mb-0 gap-3 border-t border-border bg-muted/30 px-6 py-4'>
+                <DialogClose render={<Button variant={'ghost'} />}>
+                    Cancel
                 </DialogClose>
-                <Button onClick={onSubmit} disabled={loading || !canSubmit}>
-                   { loading&& <Loader2Icon className='animate-spin'/> }Submit</Button>
-                <Button onClick={onStartInterview} disabled={!interviewId} variant={'outline'}>
-                    Start Interview</Button>
+                <Button onClick={onSubmit} disabled={loading || !canSubmit} variant={interviewId ? 'outline' : 'default'}>
+                   { loading ? <Loader2Icon className='animate-spin'/> : <Sparkles /> }Submit</Button>
+                <Button onClick={onStartInterview} disabled={!interviewId}>
+                    Start Interview<ArrowRight /></Button>
             </DialogFooter>
         </DialogContent>
     </Dialog>
