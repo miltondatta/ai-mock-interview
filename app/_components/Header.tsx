@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button'
 import React from 'react'
 
 import Link from "next/link";
+import { LayoutDashboard } from "lucide-react";
 
 import {
   Show,
@@ -39,7 +40,8 @@ export default function Header(){
             <Show when="signed-in">
 
                 <Link href="/dashboard">
-                <Button variant="outline" size="lg">
+                <Button size="lg" className="shadow-sm shadow-primary/30">
+                    <LayoutDashboard className="size-4" />
                     Dashboard
                 </Button>
                 </Link>

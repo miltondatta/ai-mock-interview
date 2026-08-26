@@ -5,11 +5,16 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { LayoutDashboard, Sparkles, CircleHelp, X } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
 const MenuOptions = [
+  {
+    name: "Home",
+    path: "/",
+    icon: Home,
+  },
   {
     name: "Dashboard",
     path: "/dashboard",
@@ -33,7 +38,10 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav className="flex flex-1 flex-col gap-1 px-3">
       {MenuOptions.map((option) => {
-        const isActive = pathname?.startsWith(option.path)
+        const isActive =
+          option.path === "/"
+            ? pathname === "/"
+            : pathname?.startsWith(option.path)
         const Icon = option.icon
         return (
           <Link
@@ -81,12 +89,12 @@ function SidebarUserFooter() {
 
 function SidebarBrand() {
   return (
-    <div className="flex items-center gap-2.5 px-5 py-5">
+    <Link href="/" className="flex items-center gap-2.5 px-5 py-5">
       <img src="/logo.svg" alt="" width={30} height={30} className="shrink-0 rounded-lg" />
       <span className="truncate text-base font-bold text-sidebar-foreground">
         AI Mock Interview
       </span>
-    </div>
+    </Link>
   )
 }
 
@@ -127,12 +135,12 @@ function Sidebar({ mobileOpen, onClose }: SidebarProps) {
               className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-sidebar lg:hidden"
             >
               <div className="flex items-center justify-between px-5 py-5">
-                <div className="flex items-center gap-2.5">
+                <Link href="/" onClick={onClose} className="flex items-center gap-2.5">
                   <img src="/logo.svg" alt="" width={28} height={28} className="rounded-lg" />
                   <span className="text-base font-bold text-sidebar-foreground">
                     AI Mock Interview
                   </span>
-                </div>
+                </Link>
                 <button
                   onClick={onClose}
                   aria-label="Close menu"

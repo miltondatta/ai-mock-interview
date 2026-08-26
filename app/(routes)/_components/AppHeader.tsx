@@ -1,6 +1,7 @@
 "use client"
 
 import React from "react"
+import Link from "next/link"
 import { UserButton } from "@clerk/nextjs"
 import { Menu } from "lucide-react"
 
@@ -19,8 +20,10 @@ function AppHeader({ onMenuClick }: AppHeaderProps) {
         >
           <Menu className="size-5" />
         </button>
-        <img src="/logo.svg" alt="" width={26} height={26} className="rounded-md" />
-        <span className="text-sm font-bold">AI Mock Interview</span>
+        <Link href="/" className="flex items-center gap-2.5">
+          <img src="/logo.svg" alt="" width={26} height={26} className="rounded-md" />
+          <span className="text-sm font-bold">AI Mock Interview</span>
+        </Link>
       </div>
       <UserButton appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
     </header>
