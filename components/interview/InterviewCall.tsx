@@ -38,6 +38,17 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
     const [isJoining, setIsJoining] = useState(false)
     const [joinError, setJoinError] = useState<string | null>(null)
 
+    // conversation.getId() throws once the SDK has cleared its active session
+    // (always true by the time onDisconnect fires), so it can't be called
+    // directly from these callbacks without an unhandled rejection.
+    function getSafeConversationId() {
+        try {
+            return conversation.getId()
+        } catch {
+            return undefined
+        }
+    }
+
     const conversation = useConversation({
         onMessage: ({ message, role, event_id }) => {
             dispatchMessage({
@@ -46,7 +57,16 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
                 text: message,
             })
         },
-        onError: (message) => console.error("ElevenLabs conversation error:", message),
+        onError: (message, context) =>
+            console.error("ElevenLabs conversation error:", message, context, "conversationId:", getSafeConversationId()),
+        onDisconnect: (details) =>
+            console.error(
+                "ElevenLabs conversation disconnected:",
+                details.reason,
+                details.context,
+                "conversationId:",
+                getSafeConversationId()
+            ),
     })
 
     // startSession() is only ever called from this click handler, never from a
@@ -140,6 +160,7 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
                     isMuted={conversation.isMuted}
                     onToggleMicrophone={() => conversation.setMuted(!conversation.isMuted)}
                     onEndCall={() => setShowEndConfirm(true)}
+                    onReconnect={handleJoin}
                     isEnding={isEnding}
                 />
             </div>

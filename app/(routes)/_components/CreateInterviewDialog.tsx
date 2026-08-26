@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import ResumeUpload from './ResumeUpload'
 import JobDescription from './JobDescription'
+import InterviewOptions from './InterviewOptions'
 import axios from 'axios'
 import { ArrowRight, CheckCircle2, FileText, Loader2Icon, Plus, Sparkles, UploadCloud } from 'lucide-react'
 import { useMutation } from 'convex/react'
@@ -27,10 +28,19 @@ import { useRouter } from 'next/navigation'
 function CreateInterviewDialog() {
   const [file, setFile] = useState<File|null>();
   const [loading,setLoading] = useState(false);
-  const [formData,setFormData] = useState<any>();
+  const [formData,setFormData] = useState<any>({ level: 'basic', qno: '3' });
   const [interviewId,setInterviewId] = useState<string|null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const {userDetail,setUserDetail}=useContext(UserDetailContext);
   const router = useRouter();
+
+  // Question generation can take minutes - don't let an accidental outside click/Escape
+  // silently close the dialog mid-request and strand the user on the dashboard without
+  // ever seeing the "Start Interview" step.
+  const onDialogOpenChange = (next: boolean) => {
+    if (!next && loading) return;
+    setDialogOpen(next);
+  }
 
   const saveInterviewQuestion=useMutation(api.Interview.SaveInterviewQuestions)
   const onHandleInputChange = (field:string, value:string) =>{
@@ -48,6 +58,8 @@ function CreateInterviewDialog() {
     if(file) formData_.append('file',file);
     formData_.append('jobTitle',formData?.jobTitle??'');
     formData_.append('jobDescription',formData?.jobDescription??'');
+    formData_.append('level',formData?.level || 'basic');
+    formData_.append('qno',String(formData?.qno || '3'));
 
     try{
         const res = await axios.post('api/generate-interview-questions',formData_);
@@ -60,6 +72,8 @@ function CreateInterviewDialog() {
             resumeFileName: res.data?.resumeFileName ?? undefined,
             jobTitle: formData?.jobTitle || undefined,
             jobDescription: formData?.jobDescription || undefined,
+            level: formData?.level || undefined,
+            qno: Number(formData?.qno) || undefined,
             uid: userDetail?._id
         });
         console.log(resp);
@@ -77,7 +91,8 @@ function CreateInterviewDialog() {
     }
   }
 
-  const canSubmit = !!file || (!!formData?.jobTitle && !!formData?.jobDescription);
+  const isQnoValid = /^[1-9][0-9]*$/.test(String(formData?.qno ?? ''));
+  const canSubmit = (!!file || (!!formData?.jobTitle && !!formData?.jobDescription)) && isQnoValid;
 
   const onStartInterview = () => {
     if(!interviewId) return;
@@ -85,7 +100,7 @@ function CreateInterviewDialog() {
   }
 
   return (
-        <Dialog>
+        <Dialog open={dialogOpen} onOpenChange={onDialogOpenChange}>
         <DialogTrigger render={<Button size="lg" />}>
             <Plus />Create Interview
         </DialogTrigger>
@@ -113,6 +128,12 @@ function CreateInterviewDialog() {
                     <TabsContent value="resume-upload" className='mt-4'><ResumeUpload setFiles = {(file:File) => setFile(file)} /></TabsContent>
                     <TabsContent value="job-desc" className='mt-4'><JobDescription onHandleInputChange={onHandleInputChange}/></TabsContent>
                 </Tabs>
+
+                <InterviewOptions
+                    level={formData?.level ?? 'basic'}
+                    qno={String(formData?.qno ?? '3')}
+                    onHandleInputChange={onHandleInputChange}
+                />
 
                 {interviewId && (
                     <div className='mt-4 flex items-center gap-2 rounded-lg bg-success/10 px-3.5 py-2.5 text-sm font-medium text-success'>

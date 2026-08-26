@@ -12,6 +12,7 @@ interface InterviewVideoPanelProps {
     isMuted: boolean
     onToggleMicrophone: () => void
     onEndCall: () => void
+    onReconnect?: () => void
     isEnding?: boolean
 }
 
@@ -21,6 +22,7 @@ function InterviewVideoPanel({
     isMuted,
     onToggleMicrophone,
     onEndCall,
+    onReconnect,
     isEnding,
 }: InterviewVideoPanelProps) {
     // "disconnected" only shows as an error here because this panel only ever
@@ -37,6 +39,7 @@ function InterviewVideoPanel({
                     <InterviewError
                         dark
                         message="Unable to connect to the interviewer. Please check your connection and try again."
+                        onRetry={onReconnect}
                     />
                 ) : isConnecting ? (
                     <InterviewLoading dark message="Connecting to interviewer..." />

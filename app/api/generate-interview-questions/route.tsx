@@ -52,6 +52,8 @@ export async function POST(req:NextRequest) {
     const file = formData.get('file') as File | null;
     const jobTitle = formData.get('jobTitle') as string | null;
     const jobDescription = formData.get('jobDescription') as string | null;
+    const level = (formData.get('level') as string | null) || 'basic';
+    const qno = (formData.get('qno') as string | null) || '3';
     const hasFile = !!file && file.size > 0;
     // Paused until package/credit options are integrated - resume by uncommenting.
     // const rateLimitUserId = user?.primaryEmailAddress?.emailAddress??'';
@@ -90,11 +92,15 @@ export async function POST(req:NextRequest) {
 
         //Call N8N workflow - same webhook handles resume-based and jobTitle/jobDescription-based generation
         const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question", hasFile ? {
-            resumeUrl
+            resumeUrl,
+            level,
+            qno
         } : {
             resumeUrl: null,
             jobTitle,
-            jobDescription
+            jobDescription,
+            level,
+            qno
         }, {
             timeout: 280000 // stay just under the 300s proxy/maxDuration ceiling
         });
@@ -105,12 +111,17 @@ export async function POST(req:NextRequest) {
         const parsedContent = typeof rawContent === "string" ? JSON.parse(sanitizeJsonControlChars(rawContent)) : rawContent;
 
         // Normalize the "Q.1"/"A.1"-style keys into a plain { question, answer } list
-        const questions = (parsedContent?.questions ?? []).map((item: Record<string, string>) => {
+        const allQuestions = (parsedContent?.questions ?? []).map((item: Record<string, string>) => {
             const entries = Object.entries(item);
             const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
             const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
             return { question, answer };
         });
+
+        // N8N/Gemini doesn't always honor the requested question count - enforce it here
+        // rather than trusting the upstream response as-is.
+        const requestedQno = parseInt(qno, 10);
+        const questions = requestedQno > 0 ? allQuestions.slice(0, requestedQno) : allQuestions;
 
         return NextResponse.json({
             questions,

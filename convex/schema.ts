@@ -13,6 +13,8 @@ export default defineSchema({
       resumeFileName: v.optional(v.string()),
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
+      level: v.optional(v.string()),
+      qno: v.optional(v.number()),
       userId: v.id('UserTable'),
       status: v.string(),
       elevenlabsConversationId: v.optional(v.string()),
