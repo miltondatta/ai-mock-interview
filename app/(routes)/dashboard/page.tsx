@@ -30,14 +30,20 @@ function Dashboard() {
         <CreateInterviewDialog />
       </div>
 
-      {interviewList && interviewList.length > 0 ? (
-        <div className='mt-10 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3'>
-          {interviewList.map((interview) => (
-            <InterviewCard key={interview._id} interview={interview} />
-          ))}
-        </div>
-      ) : (
-        interviewList && interviewList.length == 0 && <EmptyState />
+      {interviewList && (
+        <>
+          {/* Both branches stay mounted and are toggled with CSS (not unmounted via a
+              ternary) so a CreateInterviewDialog left open inside EmptyState isn't
+              destroyed mid-flow the instant this list flips from empty to non-empty. */}
+          <div className={interviewList.length > 0 ? 'mt-10 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3' : 'hidden'}>
+            {interviewList.map((interview) => (
+              <InterviewCard key={interview._id} interview={interview} />
+            ))}
+          </div>
+          <div className={interviewList.length === 0 ? '' : 'hidden'}>
+            <EmptyState />
+          </div>
+        </>
       )}
     </div>
   )

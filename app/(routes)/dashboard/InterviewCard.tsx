@@ -54,7 +54,7 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
             {interview.qno && (
               <span className='flex items-center gap-1'>
                 <Hash className='size-3.5 text-primary' />
-                Questions Attempted: <span className='font-medium text-foreground'>{interview.qno}</span>
+                {isCompleted ? 'Questions Attempted' : 'Questions Created'}: <span className='font-medium text-foreground'>{interview.qno}</span>
               </span>
             )}
           </div>

@@ -59,14 +59,19 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
         },
         onError: (message, context) =>
             console.error("ElevenLabs conversation error:", message, context, "conversationId:", getSafeConversationId()),
-        onDisconnect: (details) =>
-            console.error(
+        onDisconnect: (details) => {
+            // reason "user"/"agent" is a normal, deliberate end of session (e.g. our own
+            // conversation.endSession() call in confirmEndCall) - only an actual "error"
+            // disconnect warrants console.error, so a routine end-of-call doesn't read as a crash.
+            const log = details.reason === "error" ? console.error : console.log
+            log(
                 "ElevenLabs conversation disconnected:",
                 details.reason,
-                details.context,
+                "context" in details ? details.context : undefined,
                 "conversationId:",
                 getSafeConversationId()
-            ),
+            )
+        },
     })
 
     // startSession() is only ever called from this click handler, never from a
@@ -177,8 +182,8 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <DialogClose>
-                            <Button variant="ghost">Cancel</Button>
+                        <DialogClose render={<Button variant="ghost" />}>
+                            Cancel
                         </DialogClose>
                         <Button variant="destructive" onClick={confirmEndCall}>
                             End Call

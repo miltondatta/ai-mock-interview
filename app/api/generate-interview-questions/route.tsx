@@ -14,6 +14,39 @@ export const maxDuration = 300;
 // Gemini sometimes emits raw, unescaped control characters (e.g. literal newlines) inside
 // JSON string values, which JSON.parse rejects. Escape/strip control chars only while inside
 // a string literal so structural whitespace outside strings is left untouched.
+// Gemini occasionally ignores the "return JSON" instruction and replies with plain
+// "Q.1 ... / A.1 ..." text instead (seen on the resume-upload path). Fall back to
+// extracting question/answer pairs from that format when JSON.parse fails.
+function parsePlainTextQA(text: string): { question: string; answer: string }[] {
+    const lines = text.split(/\r?\n/);
+    const results: { question: string; answer: string }[] = [];
+    let current: { question: string; answer: string } | null = null;
+    let mode: "question" | "answer" | null = null;
+
+    const qMatch = (line: string) => line.match(/^\s*Q\.?\s*\d+\s*[:.)]?\s*(.*)$/i);
+    const aMatch = (line: string) => line.match(/^\s*A\.?\s*\d+\s*[:.)]?\s*(.*)$/i);
+
+    for (const line of lines) {
+        const q = qMatch(line);
+        const a = aMatch(line);
+        if (q) {
+            if (current) results.push(current);
+            current = { question: q[1].trim(), answer: "" };
+            mode = "question";
+        } else if (a && current) {
+            current.answer = a[1].trim();
+            mode = "answer";
+        } else if (current && mode) {
+            const trimmed = line.trim();
+            if (trimmed) {
+                current[mode] = current[mode] ? `${current[mode]} ${trimmed}` : trimmed;
+            }
+        }
+    }
+    if (current) results.push(current);
+    return results.filter((item) => item.question);
+}
+
 function sanitizeJsonControlChars(text: string): string {
     let result = "";
     let inString = false;
@@ -108,15 +141,30 @@ export async function POST(req:NextRequest) {
 
         // N8N returns a raw Gemini candidate object; the JSON-encoded questions live at content.parts[0].text
         const rawContent = result.data?.content?.parts?.[0]?.text;
-        const parsedContent = typeof rawContent === "string" ? JSON.parse(sanitizeJsonControlChars(rawContent)) : rawContent;
 
-        // Normalize the "Q.1"/"A.1"-style keys into a plain { question, answer } list
-        const allQuestions = (parsedContent?.questions ?? []).map((item: Record<string, string>) => {
-            const entries = Object.entries(item);
-            const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
-            const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
-            return { question, answer };
-        });
+        let allQuestions: { question: string; answer: string }[];
+        if (typeof rawContent === "string") {
+            try {
+                const parsedContent = JSON.parse(sanitizeJsonControlChars(rawContent));
+                // Normalize the "Q.1"/"A.1"-style keys into a plain { question, answer } list
+                allQuestions = (parsedContent?.questions ?? []).map((item: Record<string, string>) => {
+                    const entries = Object.entries(item);
+                    const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
+                    const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
+                    return { question, answer };
+                });
+            } catch {
+                // Gemini didn't return JSON this time - fall back to parsing the plain "Q.1/A.1" text.
+                allQuestions = parsePlainTextQA(rawContent);
+            }
+        } else {
+            allQuestions = (rawContent?.questions ?? []).map((item: Record<string, string>) => {
+                const entries = Object.entries(item);
+                const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
+                const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
+                return { question, answer };
+            });
+        }
 
         // N8N/Gemini doesn't always honor the requested question count - enforce it here
         // rather than trusting the upstream response as-is.
