@@ -9,6 +9,7 @@
  */
 
 import type * as Interview from "../Interview.js";
+import type * as admin from "../admin.js";
 import type * as rateLimit from "../rateLimit.js";
 import type * as users from "../users.js";
 
@@ -20,6 +21,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   Interview: typeof Interview;
+  admin: typeof admin;
   rateLimit: typeof rateLimit;
   users: typeof users;
 }>;
