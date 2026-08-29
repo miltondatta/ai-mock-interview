@@ -49,6 +49,10 @@ export default function RootLayout({
           formButtonPrimary:
             "bg-primary text-primary-foreground hover:bg-primary/80 text-sm normal-case shadow-none",
           formFieldInput: "border-border focus:border-ring",
+          socialButtonsBlockButton:
+            "!border !border-border !bg-card !text-foreground hover:!bg-muted !shadow-sm !opacity-100",
+          socialButtonsBlockButtonText: "!text-foreground !font-medium !opacity-100",
+          socialButtonsProviderIcon: "!opacity-100",
           footerActionLink: "text-primary hover:text-primary/80",
           userButtonPopoverCard: "rounded-2xl border border-border shadow-lg",
           userButtonPopoverActionButton: "hover:bg-muted rounded-lg",

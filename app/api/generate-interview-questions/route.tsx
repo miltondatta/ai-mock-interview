@@ -81,6 +81,12 @@ function sanitizeJsonControlChars(text: string): string {
 
 export async function POST(req:NextRequest) {
     const user = await currentUser();
+    if (!user) {
+        return NextResponse.json(
+            { error: "You must be logged in to create an interview." },
+            { status: 401 }
+        );
+    }
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const jobTitle = formData.get('jobTitle') as string | null;

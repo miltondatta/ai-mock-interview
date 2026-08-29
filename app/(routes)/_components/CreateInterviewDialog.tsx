@@ -39,6 +39,13 @@ function CreateInterviewDialog() {
   // ever seeing the "Start Interview" step.
   const onDialogOpenChange = (next: boolean) => {
     if (!next && loading) return;
+    if (next) {
+      // Fresh "Create Interview" session - clear any leftover state from a
+      // previous run so Generate Questions/Start Interview start disabled again.
+      setFile(null);
+      setFormData({ level: 'basic', qno: '3' });
+      setInterviewId(null);
+    }
     setDialogOpen(next);
   }
 
@@ -143,14 +150,21 @@ function CreateInterviewDialog() {
                 )}
             </div>
 
-            <DialogFooter className='mx-0 mb-0 gap-3 border-t border-border bg-muted/30 px-6 py-4'>
-                <DialogClose render={<Button variant={'ghost'} />}>
-                    Cancel
-                </DialogClose>
-                <Button onClick={onSubmit} disabled={loading || !canSubmit} variant={interviewId ? 'outline' : 'default'}>
-                   { loading ? <Loader2Icon className='animate-spin'/> : <Sparkles /> }Submit</Button>
-                <Button onClick={onStartInterview} disabled={!interviewId}>
-                    Start Interview<ArrowRight /></Button>
+            <DialogFooter className='mx-0 mb-0 flex-col items-stretch gap-3 border-t border-border bg-muted/30 px-6 py-4 sm:items-stretch'>
+                <div className='flex items-center justify-end gap-3'>
+                    <DialogClose render={<Button variant={'ghost'} />}>
+                        Cancel
+                    </DialogClose>
+                    <Button onClick={onSubmit} disabled={loading || !canSubmit || !!interviewId}>
+                       { loading ? <Loader2Icon className='animate-spin'/> : <Sparkles /> }Generate Questions</Button>
+                    <Button onClick={onStartInterview} disabled={!interviewId}>
+                        Start Interview<ArrowRight /></Button>
+                </div>
+                {loading && (
+                    <p className='text-right text-sm font-medium text-red-600'>
+                        Generating Questions ..... Wait
+                    </p>
+                )}
             </DialogFooter>
         </DialogContent>
     </Dialog>
