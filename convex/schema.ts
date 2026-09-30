@@ -57,4 +57,15 @@ export default defineSchema({
       sortOrder: v.number(),
       updatedAt: v.number(),
     }),
+
+    // Practice Coach: one row per "Generate Video" call, recording what was sent
+    // to the N8N webhook and the response it returned.
+    PracticeCoachTable: defineTable({
+      userId: v.id('UserTable'),
+      resumeUrl: v.optional(v.string()),
+      jobTitle: v.optional(v.string()),
+      jobDescription: v.optional(v.string()),
+      webhookResponse: v.any(),
+      createdAt: v.number(),
+    }),
 });

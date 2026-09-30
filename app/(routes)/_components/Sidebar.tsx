@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { Home, LayoutDashboard, Sparkles, CircleHelp, X } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
@@ -19,6 +19,11 @@ const MenuOptions = [
     name: "Dashboard",
     path: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    name: "Practice Coach",
+    path: "/practice-coach",
+    icon: Video,
   },
   {
     name: "Upgrade",
