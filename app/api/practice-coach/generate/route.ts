@@ -34,6 +34,8 @@ export async function POST(req: NextRequest) {
     if (!file || file.size === 0) {
         return NextResponse.json({ error: "Please upload your resume first." }, { status: 400 });
     }
+    const jobTitle = (formData.get("jobTitle") as string | null) ?? "";
+    const jobDescription = (formData.get("jobDescription") as string | null) ?? "";
 
     try {
         const imagekit = new ImageKit({
@@ -52,14 +54,12 @@ export async function POST(req: NextRequest) {
         });
         const resumeUrl = uploadedFile?.url;
 
-        // job_title/job_description are intentionally left blank for now -
-        // wired up to the real form values in a later change.
         const webhookRes = await axios.post(
             "https://n8n.vistechsolutions.online/webhook/practice_coach",
             {
                 resumeUrl,
-                job_title: "",
-                job_description: "",
+                job_title: jobTitle,
+                job_description: jobDescription,
             },
             { timeout: 280000 }
         );
@@ -67,8 +67,8 @@ export async function POST(req: NextRequest) {
         await convexClient.mutation(api.PracticeCoach.SavePracticeCoachGeneration, {
             userId: convexUser._id,
             resumeUrl,
-            jobTitle: "",
-            jobDescription: "",
+            jobTitle,
+            jobDescription,
             webhookResponse: webhookRes.data,
         });
 

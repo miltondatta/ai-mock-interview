@@ -20,6 +20,8 @@ import {
 
 function PracticeCoach() {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
+  const [jobTitle, setJobTitle] = useState("")
+  const [jobDescription, setJobDescription] = useState("")
   const [generating, setGenerating] = useState(false)
 
   const onGenerateVideo = async () => {
@@ -28,6 +30,8 @@ function PracticeCoach() {
     try {
       const formData = new FormData()
       formData.append("file", resumeFile)
+      formData.append("jobTitle", jobTitle)
+      formData.append("jobDescription", jobDescription)
       const res = await fetch("/api/practice-coach/generate", {
         method: "POST",
         body: formData,
@@ -99,7 +103,12 @@ function PracticeCoach() {
                 <Briefcase className="size-4 text-primary" />
                 Job Title
               </label>
-              <Input placeholder="Ex. Full Stack React Developer" className="flex-1" />
+              <Input
+                placeholder="Ex. Full Stack React Developer"
+                className="flex-1"
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+              />
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
@@ -107,7 +116,12 @@ function PracticeCoach() {
                 <FileText className="size-4 text-primary" />
                 Job Description
               </label>
-              <Textarea placeholder="Enter or Paste Job Description" className="h-[140px] flex-1" />
+              <Textarea
+                placeholder="Enter or Paste Job Description"
+                className="h-[140px] flex-1"
+                value={jobDescription}
+                onChange={(e) => setJobDescription(e.target.value)}
+              />
             </div>
           </div>
 
