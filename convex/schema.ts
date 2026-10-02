@@ -66,6 +66,7 @@ export default defineSchema({
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
       webhookResponse: v.any(),
+      audioUrl: v.optional(v.string()),
       createdAt: v.number(),
     }),
 });

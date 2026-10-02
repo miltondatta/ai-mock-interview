@@ -4,6 +4,7 @@ import axios from "axios";
 import { currentUser } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { extractPracticeScriptNarration, generatePracticeCoachAudio } from "@/utils/practiceCoachAudio";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -64,15 +65,47 @@ export async function POST(req: NextRequest) {
             { timeout: 280000 }
         );
 
+        // Narrate the generated script into an audio file via the ElevenLabs voice
+        // agent. Best-effort: if this fails, the script itself still saves below -
+        // a TTS hiccup shouldn't take down the whole generation request.
+        let audioUrl: string | undefined;
+        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+        const elevenLabsAgentId = process.env.ELEVENLABS_PRACTICE_COACH_AGENT_ID;
+        if (elevenLabsApiKey && elevenLabsAgentId) {
+            try {
+                const narrationText = extractPracticeScriptNarration(webhookRes.data);
+                if (narrationText) {
+                    const audioBuffer = await generatePracticeCoachAudio({
+                        apiKey: elevenLabsApiKey,
+                        agentId: elevenLabsAgentId,
+                        narrationText,
+                    });
+                    const uploadedAudio = await imagekit.upload({
+                        file: audioBuffer,
+                        fileName: Date.now().toString() + ".mp3",
+                        isPublished: true,
+                    });
+                    audioUrl = uploadedAudio?.url;
+                }
+            } catch (e) {
+                console.error("Failed to generate Practice Coach audio:", e);
+            }
+        } else {
+            console.error(
+                "Missing ELEVENLABS_API_KEY or ELEVENLABS_PRACTICE_COACH_AGENT_ID environment variables."
+            );
+        }
+
         await convexClient.mutation(api.PracticeCoach.SavePracticeCoachGeneration, {
             userId: convexUser._id,
             resumeUrl,
             jobTitle,
             jobDescription,
             webhookResponse: webhookRes.data,
+            audioUrl,
         });
 
-        return NextResponse.json({ resumeUrl, result: webhookRes.data });
+        return NextResponse.json({ resumeUrl, result: webhookRes.data, audioUrl });
     } catch (e) {
         console.error("Failed to generate practice video:", e);
         return NextResponse.json(
