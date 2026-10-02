@@ -66,3 +66,32 @@ export const SetPracticeCoachAudioUrl = mutation({
         await ctx.db.patch(args.id, { audioUrl: args.audioUrl });
     }
 });
+
+// Powers the session history list, newest first.
+export const GetAllPracticeCoachGenerationsForUser = query({
+    args: {
+        userId: v.id('UserTable'),
+    },
+    handler: async (ctx, args) => {
+        const generations = await ctx.db
+            .query('PracticeCoachTable')
+            .filter(q => q.eq(q.field('userId'), args.userId))
+            .collect();
+        return generations.sort((a, b) => b.createdAt - a.createdAt);
+    }
+});
+
+// Scoped to userId so one candidate can't delete another's session.
+export const DeletePracticeCoachGeneration = mutation({
+    args: {
+        id: v.id('PracticeCoachTable'),
+        userId: v.id('UserTable'),
+    },
+    handler: async (ctx, args) => {
+        const generation = await ctx.db.get(args.id);
+        if (!generation || generation.userId !== args.userId) {
+            throw new Error("Practice session not found.");
+        }
+        await ctx.db.delete(args.id);
+    }
+});

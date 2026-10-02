@@ -43,14 +43,35 @@ export async function generatePracticeCoachAudio(params: {
         `https://api.elevenlabs.io/v1/convai/agents/${params.agentId}`,
         { headers: { "xi-api-key": params.apiKey } }
     );
-    const voiceId = agentRes.data?.conversation_config?.tts?.voice_id;
+    const ttsConfig = agentRes.data?.conversation_config?.tts;
+    const agentConfig = agentRes.data?.conversation_config?.agent;
+    const voiceId = ttsConfig?.voice_id;
     if (!voiceId) {
         throw new Error("ElevenLabs agent response missing conversation_config.tts.voice_id");
     }
 
+    // The raw TTS endpoint below only narrates the text we send it - it never
+    // plays the agent's configured greeting the way a live conversation
+    // would, so prepend that greeting ourselves.
+    const firstMessage =
+        typeof agentConfig?.first_message === "string" ? agentConfig.first_message.trim() : "";
+    const fullNarration = firstMessage ? `${firstMessage}\n\n${params.narrationText}` : params.narrationText;
+
     const ttsRes = await axios.post(
         `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-        { text: params.narrationText, model_id: "eleven_multilingual_v2" },
+        {
+            text: fullNarration,
+            model_id: ttsConfig?.model_id ?? "eleven_multilingual_v2",
+            // Match the agent's own tuned voice settings instead of relying on
+            // the API's bare defaults, which can come out muffled/inconsistent.
+            voice_settings: {
+                stability: typeof ttsConfig?.stability === "number" ? ttsConfig.stability : 0.5,
+                similarity_boost:
+                    typeof ttsConfig?.similarity_boost === "number" ? ttsConfig.similarity_boost : 0.8,
+                style: typeof ttsConfig?.style === "number" ? ttsConfig.style : 0.3,
+                use_speaker_boost: true,
+            },
+        },
         {
             headers: {
                 "xi-api-key": params.apiKey,

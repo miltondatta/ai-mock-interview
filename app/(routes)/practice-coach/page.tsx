@@ -10,6 +10,14 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { FileUpload } from "@/components/ui/file-upload"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Briefcase,
   FileText,
   Headphones,
@@ -19,7 +27,9 @@ import {
   Clock,
   Loader2,
   Sparkles,
+  Trash2,
 } from "lucide-react"
+import { Id } from "@/convex/_generated/dataModel"
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00"
@@ -68,24 +78,25 @@ function PracticeCoach() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [autoplayRequested, setAutoplayRequested] = useState(false)
-  const [generatingAudio, setGeneratingAudio] = useState(false)
   const [audioError, setAudioError] = useState<string | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const [sessionToDelete, setSessionToDelete] = useState<Id<"PracticeCoachTable"> | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [generatingAudioId, setGeneratingAudioId] = useState<Id<"PracticeCoachTable"> | null>(null)
+  const [resumeUploadKey, setResumeUploadKey] = useState(0)
+  const [formNotice, setFormNotice] = useState<{ type: "required" | "advisory"; message: string } | null>(null)
 
-  // Always reflects the user's most recent Practice Coach row, so the player
-  // card can offer it for playback - including one saved before on-demand
-  // audio generation existed (no audioUrl yet).
-  const latestGeneration = useQuery(
-    api.PracticeCoach.GetLatestPracticeCoachGeneration,
+  // Every Practice Coach generation for this user, newest first - rendered as
+  // a single playlist, each row playable and deletable on its own.
+  const allGenerations = useQuery(
+    api.PracticeCoach.GetAllPracticeCoachGenerationsForUser,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   )
 
-  // True once the shared <audio> element has the latest generation's file
-  // loaded (as opposed to some other/no audio), unlocking the scrubber.
-  const isLatestLoaded =
-    !!audioUrl && !!latestGeneration?.audioUrl && audioUrl === latestGeneration.audioUrl
+  type PracticeCoachGeneration = NonNullable<typeof allGenerations>[number]
 
   // Setting audioUrl and requesting autoplay happen in separate state
   // updates, so autoplay only actually starts once the <audio> element's
@@ -99,7 +110,7 @@ function PracticeCoach() {
     setAutoplayRequested(false)
   }, [audioUrl, autoplayRequested])
 
-  const onGenerateVideo = async () => {
+  const runGeneration = async () => {
     if (!resumeFile || generating) return
     setGenerating(true)
     try {
@@ -116,12 +127,59 @@ function PracticeCoach() {
         console.error("Failed to generate practice video:", data?.error)
       } else {
         setAudioUrl(data?.audioUrl ?? null)
+        // Clear the form so the candidate starts the next session fresh -
+        // this also re-disables Generate Scripts until a resume is chosen again.
+        setResumeFile(null)
+        setJobTitle("")
+        setJobDescription("")
+        setResumeUploadKey((key) => key + 1)
       }
     } catch (e) {
       console.error("Failed to generate practice video:", e)
     } finally {
       setGenerating(false)
     }
+  }
+
+  const onGenerateVideo = () => {
+    if (!resumeFile || generating) return
+
+    const trimmedTitle = jobTitle.trim()
+    const trimmedDescription = jobDescription.trim()
+
+    // Job description alone isn't enough to tailor a script to a role -
+    // require the job title whenever a description is given.
+    if (!trimmedTitle && trimmedDescription) {
+      setFormNotice({
+        type: "required",
+        message:
+          "Please add a Job Title along with the Job Description so we can tailor the script to the right role.",
+      })
+      return
+    }
+
+    // Job title and/or description are otherwise optional - nudge the
+    // candidate toward providing both for a better script, but let them
+    // choose to proceed without one or both.
+    if (!trimmedTitle && !trimmedDescription) {
+      setFormNotice({
+        type: "advisory",
+        message:
+          "You haven't added a Job Title or Job Description. Providing both helps us generate a better, more tailored practice script.",
+      })
+      return
+    }
+
+    if (trimmedTitle && !trimmedDescription) {
+      setFormNotice({
+        type: "advisory",
+        message:
+          "You haven't added a Job Description. Providing both the Job Title and Job Description helps us generate a better, more tailored practice script.",
+      })
+      return
+    }
+
+    runGeneration()
   }
 
   const onTogglePlayback = () => {
@@ -149,24 +207,24 @@ function PracticeCoach() {
     setCurrentTime(value)
   }
 
-  // Loads/generates the latest generation's audio, then plays it.
-  const onLoadLatestGeneration = async () => {
-    if (!latestGeneration || generatingAudio) return
+  // Loads/generates a given row's audio, then plays it.
+  const onLoadGeneration = async (generation: PracticeCoachGeneration) => {
+    if (generatingAudioId) return
 
-    if (latestGeneration.audioUrl) {
+    if (generation.audioUrl) {
       setAudioError(null)
-      setAudioUrl(latestGeneration.audioUrl)
+      setAudioUrl(generation.audioUrl)
       setAutoplayRequested(true)
       return
     }
 
-    setGeneratingAudio(true)
+    setGeneratingAudioId(generation._id)
     setAudioError(null)
     try {
       const res = await fetch("/api/practice-coach/generate-audio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ practiceCoachId: latestGeneration._id }),
+        body: JSON.stringify({ practiceCoachId: generation._id }),
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) {
@@ -176,19 +234,50 @@ function PracticeCoach() {
       setAudioUrl(data?.audioUrl ?? null)
       setAutoplayRequested(true)
     } catch (e) {
-      console.error("Failed to generate audio for the latest practice script:", e)
+      console.error("Failed to generate audio for this practice script:", e)
       setAudioError("Unable to generate audio. Please try again.")
     } finally {
-      setGeneratingAudio(false)
+      setGeneratingAudioId(null)
     }
   }
 
-  const onPlayerButtonClick = () => {
-    if (generatingAudio) return
-    if (isLatestLoaded) {
+  const onPlayerButtonClick = (generation: PracticeCoachGeneration) => {
+    if (generatingAudioId) return
+    const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
+    if (isRowLoaded) {
       onTogglePlayback()
     } else {
-      onLoadLatestGeneration()
+      onLoadGeneration(generation)
+    }
+  }
+
+  const onConfirmDelete = async () => {
+    if (!sessionToDelete || isDeleting) return
+    setIsDeleting(true)
+    setDeleteError(null)
+    try {
+      const res = await fetch("/api/practice-coach/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ practiceCoachId: sessionToDelete }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        setDeleteError(data?.error ?? "Unable to delete this session. Please try again.")
+        return
+      }
+      const deletedGeneration = allGenerations?.find((g) => g._id === sessionToDelete)
+      if (deletedGeneration?.audioUrl && deletedGeneration.audioUrl === audioUrl) {
+        audioRef.current?.pause()
+        setAudioUrl(null)
+        setIsPlaying(false)
+      }
+      setSessionToDelete(null)
+    } catch (e) {
+      console.error("Failed to delete practice session:", e)
+      setDeleteError("Unable to delete this session. Please try again.")
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -214,7 +303,7 @@ function PracticeCoach() {
         </div>
       </motion.div>
 
-      {/* Player */}
+      {/* Playlist */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -223,67 +312,89 @@ function PracticeCoach() {
       >
         <div className="pointer-events-none absolute -right-10 -top-10 size-48 rounded-full bg-primary/10 blur-2xl" />
 
-        {latestGeneration ? (
-          <div className="relative z-10 flex flex-col gap-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={onPlayerButtonClick}
-                  disabled={generatingAudio}
-                  className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 transition-transform hover:scale-105 disabled:pointer-events-none disabled:opacity-60"
-                >
-                  {generatingAudio ? (
-                    <Loader2 className="size-6 animate-spin" />
-                  ) : isLatestLoaded && isPlaying ? (
-                    <Pause className="size-6" />
-                  ) : (
-                    <Play className="size-6" />
-                  )}
-                </button>
-                <div>
-                  <p className="font-semibold text-foreground">
-                    {latestGeneration.jobTitle || "Practice script"}
-                  </p>
-                  <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Clock className="size-3" />
-                    {generatingAudio ? "Generating audio…" : relativeTime(latestGeneration.createdAt)}
+        {allGenerations && allGenerations.length > 0 ? (
+          <div className="relative z-10 flex flex-col divide-y divide-border">
+            {allGenerations.map((generation) => {
+              const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
+              const isRowGeneratingAudio = generatingAudioId === generation._id
+              return (
+                <div key={generation._id} className="flex flex-col gap-6 py-6 first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <button
+                        type="button"
+                        onClick={() => onPlayerButtonClick(generation)}
+                        disabled={isRowGeneratingAudio}
+                        className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 transition-transform hover:scale-105 disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        {isRowGeneratingAudio ? (
+                          <Loader2 className="size-6 animate-spin" />
+                        ) : isRowLoaded && isPlaying ? (
+                          <Pause className="size-6" />
+                        ) : (
+                          <Play className="size-6" />
+                        )}
+                      </button>
+                      <div>
+                        <p className="font-semibold text-foreground">
+                          {generation.jobTitle || "Practice script"}
+                        </p>
+                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Clock className="size-3" />
+                          {isRowGeneratingAudio ? "Generating audio…" : relativeTime(generation.createdAt)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Waveform active={isRowLoaded && isPlaying} />
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setDeleteError(null)
+                          setSessionToDelete(generation._id)
+                        }}
+                        aria-label="Delete session"
+                        className="shrink-0 text-muted-foreground"
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
                   </div>
+
+                  {isRowLoaded && audioError && <p className="text-sm text-destructive">{audioError}</p>}
+
+                  {isRowLoaded && (
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={onRestart}
+                        aria-label="Restart"
+                        className="shrink-0 text-muted-foreground"
+                      >
+                        <RotateCcw />
+                      </Button>
+                      <span className="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+                        {formatTime(currentTime)}
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={duration || 0}
+                        step={0.1}
+                        value={currentTime}
+                        onChange={(e) => onSeek(Number(e.target.value))}
+                        className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                      />
+                      <span className="w-9 shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {formatTime(duration)}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              </div>
-              <Waveform active={isLatestLoaded && isPlaying} />
-            </div>
-
-            {audioError && <p className="text-sm text-destructive">{audioError}</p>}
-
-            {isLatestLoaded && (
-              <div className="flex items-center gap-3">
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={onRestart}
-                  aria-label="Restart"
-                  className="shrink-0 text-muted-foreground"
-                >
-                  <RotateCcw />
-                </Button>
-                <span className="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-                  {formatTime(currentTime)}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={duration || 0}
-                  step={0.1}
-                  value={currentTime}
-                  onChange={(e) => onSeek(Number(e.target.value))}
-                  className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
-                />
-                <span className="w-9 shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {formatTime(duration)}
-                </span>
-              </div>
-            )}
+              )
+            })}
           </div>
         ) : (
           <div className="relative z-10 flex flex-col items-center gap-3 py-6 text-center">
@@ -312,6 +423,78 @@ function PracticeCoach() {
         />
       </motion.div>
 
+      <Dialog
+        open={!!sessionToDelete}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSessionToDelete(null)
+            setDeleteError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this practice session?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete the generated audio recording and the saved script for this
+              practice session. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={isDeleting}
+              onClick={() => {
+                setSessionToDelete(null)
+                setDeleteError(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onConfirmDelete} disabled={isDeleting}>
+              {isDeleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!formNotice}
+        onOpenChange={(open) => {
+          if (!open) setFormNotice(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {formNotice?.type === "required" ? "Job title needed" : "Add more detail for a better script"}
+            </DialogTitle>
+            <DialogDescription>{formNotice?.message}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            {formNotice?.type === "required" ? (
+              <Button onClick={() => setFormNotice(null)}>Got it</Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setFormNotice(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setFormNotice(null)
+                    runGeneration()
+                  }}
+                >
+                  Proceed
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Generation form */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
@@ -319,56 +502,20 @@ function PracticeCoach() {
         transition={{ duration: 0.3, delay: 0.2 }}
         className="mt-8 rounded-3xl border border-border bg-card p-6 shadow-sm md:p-8"
       >
-        <div className="flex items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <Sparkles className="size-4" />
-          </div>
-          <div>
-            <h2 className="font-semibold text-foreground">Create a new practice session</h2>
-            <p className="text-sm text-muted-foreground">
-              Upload your resume and the role details — we&apos;ll generate a tailored script and audio.
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex-1 space-y-6">
-            <div className="space-y-2">
-              <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                <FileText className="size-4 text-primary" />
-                Upload Resume
-              </label>
-              <FileUpload onChange={(files) => setResumeFile(files[0] ?? null)} />
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Sparkles className="size-4" />
             </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-              <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
-                <Briefcase className="size-4 text-primary" />
-                Job Title
-              </label>
-              <Input
-                placeholder="Ex. Full Stack React Developer"
-                className="flex-1"
-                value={jobTitle}
-                onChange={(e) => setJobTitle(e.target.value)}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
-              <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
-                <FileText className="size-4 text-primary" />
-                Job Description
-              </label>
-              <Textarea
-                placeholder="Enter or Paste Job Description"
-                className="h-[140px] flex-1"
-                value={jobDescription}
-                onChange={(e) => setJobDescription(e.target.value)}
-              />
+            <div>
+              <h2 className="font-semibold text-foreground">Create a new practice session</h2>
+              <p className="text-sm text-muted-foreground">
+                Upload your resume and the role details — we&apos;ll generate a tailored script and audio.
+              </p>
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+          <div className="flex shrink-0 flex-col items-end gap-2">
             <Button
               size="lg"
               onClick={onGenerateVideo}
@@ -376,7 +523,7 @@ function PracticeCoach() {
               className="shadow-md shadow-primary/20"
             >
               {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              Generate Video
+              Generate Scripts
             </Button>
             <AnimatePresence>
               {generating && (
@@ -387,10 +534,46 @@ function PracticeCoach() {
                   transition={{ duration: 0.4 }}
                   className="text-sm font-medium text-primary"
                 >
-                  Generating Practice Video….
+                  Generating Scripts….
                 </motion.p>
               )}
             </AnimatePresence>
+          </div>
+        </div>
+
+        <div className="mt-6 space-y-6">
+          <div className="space-y-2">
+            <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+              <FileText className="size-4 text-primary" />
+              Upload Resume
+            </label>
+            <FileUpload key={resumeUploadKey} onChange={(files) => setResumeFile(files[0] ?? null)} />
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+              <Briefcase className="size-4 text-primary" />
+              Job Title
+            </label>
+            <Input
+              placeholder="Ex. Full Stack React Developer"
+              className="flex-1"
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
+            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+              <FileText className="size-4 text-primary" />
+              Job Description
+            </label>
+            <Textarea
+              placeholder="Enter or Paste Job Description"
+              className="h-[140px] flex-1"
+              value={jobDescription}
+              onChange={(e) => setJobDescription(e.target.value)}
+            />
           </div>
         </div>
       </motion.div>
