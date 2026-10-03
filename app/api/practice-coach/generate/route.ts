@@ -4,7 +4,13 @@ import axios from "axios";
 import { currentUser } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { extractPracticeScriptNarration, generatePracticeCoachAudio } from "@/utils/practiceCoachAudio";
+import {
+    extractPracticeScriptNarration,
+    extractPracticeScriptSegments,
+    generatePracticeCoachAudio,
+    QuestionTimelineEntry,
+} from "@/utils/practiceCoachAudio";
+import { sanitizeFreeText } from "@/utils/sanitizeText";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -35,8 +41,19 @@ export async function POST(req: NextRequest) {
     if (!file || file.size === 0) {
         return NextResponse.json({ error: "Please upload your resume first." }, { status: 400 });
     }
-    const jobTitle = (formData.get("jobTitle") as string | null) ?? "";
-    const jobDescription = (formData.get("jobDescription") as string | null) ?? "";
+    // Pasted job posts drag along bullet glyphs, smart quotes/dashes, and
+    // inconsistent line endings that can confuse the n8n prompt - normalize
+    // before it's sent.
+    const jobTitle = sanitizeFreeText((formData.get("jobTitle") as string | null) ?? "");
+    const jobDescription = sanitizeFreeText((formData.get("jobDescription") as string | null) ?? "");
+    const selectedQuestionsRaw = (formData.get("selectedQuestions") as string | null) ?? "[]";
+    let selectedQuestions: string[] = [];
+    try {
+        const parsed = JSON.parse(selectedQuestionsRaw);
+        if (Array.isArray(parsed)) selectedQuestions = parsed.filter((q): q is string => typeof q === "string");
+    } catch {
+        // Malformed payload - treat as no questions selected rather than failing the request.
+    }
 
     try {
         const imagekit = new ImageKit({
@@ -55,12 +72,23 @@ export async function POST(req: NextRequest) {
         });
         const resumeUrl = uploadedFile?.url;
 
+        // N8N expects practice_questions as an object keyed "1", "2", ... rather
+        // than an array, and the count varies with how many the user picked.
+        const practiceQuestions = selectedQuestions.reduce<Record<string, string>>(
+            (acc, question, index) => {
+                acc[String(index + 1)] = question;
+                return acc;
+            },
+            {}
+        );
+
         const webhookRes = await axios.post(
             "https://n8n.vistechsolutions.online/webhook/practice_coach",
             {
                 resumeUrl,
                 job_title: jobTitle,
                 job_description: jobDescription,
+                practice_questions: practiceQuestions,
             },
             { timeout: 280000 }
         );
@@ -69,23 +97,28 @@ export async function POST(req: NextRequest) {
         // agent. Best-effort: if this fails, the script itself still saves below -
         // a TTS hiccup shouldn't take down the whole generation request.
         let audioUrl: string | undefined;
+        let questionTimeline: QuestionTimelineEntry[] | undefined;
         const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
         const elevenLabsAgentId = process.env.ELEVENLABS_PRACTICE_COACH_AGENT_ID;
         if (elevenLabsApiKey && elevenLabsAgentId) {
             try {
+                const segments = extractPracticeScriptSegments(webhookRes.data);
                 const narrationText = extractPracticeScriptNarration(webhookRes.data);
                 if (narrationText) {
-                    const audioBuffer = await generatePracticeCoachAudio({
+                    const { audio, questionTimeline: timeline } = await generatePracticeCoachAudio({
                         apiKey: elevenLabsApiKey,
                         agentId: elevenLabsAgentId,
                         narrationText,
+                        segments,
+                        candidateName: convexUser.name || "Candidate",
                     });
                     const uploadedAudio = await imagekit.upload({
-                        file: audioBuffer,
+                        file: audio,
                         fileName: Date.now().toString() + ".mp3",
                         isPublished: true,
                     });
                     audioUrl = uploadedAudio?.url;
+                    questionTimeline = timeline;
                 }
             } catch (e) {
                 console.error("Failed to generate Practice Coach audio:", e);
@@ -101,6 +134,8 @@ export async function POST(req: NextRequest) {
             resumeUrl,
             jobTitle,
             jobDescription,
+            selectedQuestions,
+            questionTimeline,
             webhookResponse: webhookRes.data,
             audioUrl,
         });

@@ -7,6 +7,10 @@ export const SavePracticeCoachGeneration = mutation({
         resumeUrl: v.optional(v.string()),
         jobTitle: v.optional(v.string()),
         jobDescription: v.optional(v.string()),
+        selectedQuestions: v.optional(v.array(v.string())),
+        questionTimeline: v.optional(
+            v.array(v.object({ question: v.string(), startTime: v.number() }))
+        ),
         webhookResponse: v.any(),
         audioUrl: v.optional(v.string()),
     },
@@ -16,6 +20,8 @@ export const SavePracticeCoachGeneration = mutation({
             resumeUrl: args.resumeUrl,
             jobTitle: args.jobTitle,
             jobDescription: args.jobDescription,
+            selectedQuestions: args.selectedQuestions,
+            questionTimeline: args.questionTimeline,
             webhookResponse: args.webhookResponse,
             audioUrl: args.audioUrl,
             createdAt: Date.now(),
@@ -61,9 +67,12 @@ export const SetPracticeCoachAudioUrl = mutation({
     args: {
         id: v.id('PracticeCoachTable'),
         audioUrl: v.string(),
+        questionTimeline: v.optional(
+            v.array(v.object({ question: v.string(), startTime: v.number() }))
+        ),
     },
     handler: async (ctx, args) => {
-        await ctx.db.patch(args.id, { audioUrl: args.audioUrl });
+        await ctx.db.patch(args.id, { audioUrl: args.audioUrl, questionTimeline: args.questionTimeline });
     }
 });
 

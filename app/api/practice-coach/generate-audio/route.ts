@@ -4,7 +4,11 @@ import { currentUser } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import { extractPracticeScriptNarration, generatePracticeCoachAudio } from "@/utils/practiceCoachAudio";
+import {
+    extractPracticeScriptNarration,
+    extractPracticeScriptSegments,
+    generatePracticeCoachAudio,
+} from "@/utils/practiceCoachAudio";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -65,12 +69,15 @@ export async function POST(req: NextRequest) {
             { status: 400 }
         );
     }
+    const segments = extractPracticeScriptSegments(generation.webhookResponse);
 
     try {
-        const audioBuffer = await generatePracticeCoachAudio({
+        const { audio, questionTimeline } = await generatePracticeCoachAudio({
             apiKey: elevenLabsApiKey,
             agentId: elevenLabsAgentId,
             narrationText,
+            segments,
+            candidateName: convexUser.name || "Candidate",
         });
 
         const imagekit = new ImageKit({
@@ -79,7 +86,7 @@ export async function POST(req: NextRequest) {
             urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT as string,
         });
         const uploadedAudio = await imagekit.upload({
-            file: audioBuffer,
+            file: audio,
             fileName: Date.now().toString() + ".mp3",
             isPublished: true,
         });
@@ -91,6 +98,7 @@ export async function POST(req: NextRequest) {
         await convexClient.mutation(api.PracticeCoach.SetPracticeCoachAudioUrl, {
             id: practiceCoachId as Id<"PracticeCoachTable">,
             audioUrl,
+            questionTimeline,
         });
 
         return NextResponse.json({ audioUrl });

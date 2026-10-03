@@ -18,7 +18,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  AlertTriangle,
   Briefcase,
+  CheckCircle2,
   FileText,
   Headphones,
   Play,
@@ -26,10 +28,20 @@ import {
   RotateCcw,
   Clock,
   Loader2,
+  ListChecks,
+  Lock,
   Sparkles,
   Trash2,
 } from "lucide-react"
+import Link from "next/link"
 import { Id } from "@/convex/_generated/dataModel"
+import { cn } from "@/lib/utils"
+import { PRACTICE_QUESTIONS, FREE_PLAN_MAX_QUESTIONS } from "./questions"
+
+// "Tell me about yourself" is pre-selected for every new session - it's the
+// de facto opener in almost any interview, so starting the candidate there
+// instead of an empty list.
+const DEFAULT_SELECTED_QUESTIONS = [PRACTICE_QUESTIONS[0]]
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00"
@@ -74,11 +86,16 @@ function PracticeCoach() {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [jobTitle, setJobTitle] = useState("")
   const [jobDescription, setJobDescription] = useState("")
+  const [selectedQuestions, setSelectedQuestions] = useState<string[]>(DEFAULT_SELECTED_QUESTIONS)
+  const [upgradeNoticeOpen, setUpgradeNoticeOpen] = useState(false)
+  const [questionsNoticeOpen, setQuestionsNoticeOpen] = useState(false)
+  const [invalidFileNotice, setInvalidFileNotice] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [autoplayRequested, setAutoplayRequested] = useState(false)
   const [audioError, setAudioError] = useState<string | null>(null)
+  const [audioErrorRowId, setAudioErrorRowId] = useState<Id<"PracticeCoachTable"> | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -118,6 +135,7 @@ function PracticeCoach() {
       formData.append("file", resumeFile)
       formData.append("jobTitle", jobTitle)
       formData.append("jobDescription", jobDescription)
+      formData.append("selectedQuestions", JSON.stringify(selectedQuestions))
       const res = await fetch("/api/practice-coach/generate", {
         method: "POST",
         body: formData,
@@ -132,6 +150,7 @@ function PracticeCoach() {
         setResumeFile(null)
         setJobTitle("")
         setJobDescription("")
+        setSelectedQuestions(DEFAULT_SELECTED_QUESTIONS)
         setResumeUploadKey((key) => key + 1)
       }
     } catch (e) {
@@ -139,6 +158,37 @@ function PracticeCoach() {
     } finally {
       setGenerating(false)
     }
+  }
+
+  // The dropzone's own "accept" hint doesn't block drag-and-drop or an "all
+  // files" picker override, so the real check happens here - anything that
+  // isn't a PDF is rejected immediately, with no option but to acknowledge.
+  const onResumeFileChange = (files: File[]) => {
+    const file = files[0]
+    if (!file) return
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+    if (!isPdf) {
+      setResumeFile(null)
+      setResumeUploadKey((key) => key + 1)
+      setInvalidFileNotice("Only PDF files are supported for your resume. Please upload a .pdf file.")
+      return
+    }
+    setResumeFile(file)
+  }
+
+  // Multi-select, capped at FREE_PLAN_MAX_QUESTIONS until real plan-based
+  // gating exists - picking past the cap surfaces the upgrade dialog instead.
+  const onToggleQuestion = (question: string) => {
+    setSelectedQuestions((prev) => {
+      if (prev.includes(question)) {
+        return prev.filter((q) => q !== question)
+      }
+      if (prev.length >= FREE_PLAN_MAX_QUESTIONS) {
+        setUpgradeNoticeOpen(true)
+        return prev
+      }
+      return [...prev, question]
+    })
   }
 
   const onGenerateVideo = () => {
@@ -179,6 +229,14 @@ function PracticeCoach() {
       return
     }
 
+    // Only the default question selected - on the free plan there's still
+    // room for more, so offer the candidate a chance to add some before
+    // the script locks in around just one question.
+    if (selectedQuestions.length === 1) {
+      setQuestionsNoticeOpen(true)
+      return
+    }
+
     runGeneration()
   }
 
@@ -213,6 +271,7 @@ function PracticeCoach() {
 
     if (generation.audioUrl) {
       setAudioError(null)
+      setAudioErrorRowId(null)
       setAudioUrl(generation.audioUrl)
       setAutoplayRequested(true)
       return
@@ -220,6 +279,7 @@ function PracticeCoach() {
 
     setGeneratingAudioId(generation._id)
     setAudioError(null)
+    setAudioErrorRowId(null)
     try {
       const res = await fetch("/api/practice-coach/generate-audio", {
         method: "POST",
@@ -229,6 +289,7 @@ function PracticeCoach() {
       const data = await res.json().catch(() => null)
       if (!res.ok) {
         setAudioError(data?.error ?? "Unable to generate audio. Please try again.")
+        setAudioErrorRowId(generation._id)
         return
       }
       setAudioUrl(data?.audioUrl ?? null)
@@ -236,6 +297,7 @@ function PracticeCoach() {
     } catch (e) {
       console.error("Failed to generate audio for this practice script:", e)
       setAudioError("Unable to generate audio. Please try again.")
+      setAudioErrorRowId(generation._id)
     } finally {
       setGeneratingAudioId(null)
     }
@@ -317,6 +379,15 @@ function PracticeCoach() {
             {allGenerations.map((generation) => {
               const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
               const isRowGeneratingAudio = generatingAudioId === generation._id
+              // Only the question whose narration has started by the current
+              // playback position - timeline entries are already in the
+              // order they're read, so the last one at or before now is active.
+              const activeQuestion = isRowLoaded
+                ? generation.questionTimeline?.reduce<string | null>(
+                    (active, entry) => (entry.startTime <= currentTime ? entry.question : active),
+                    null
+                  ) ?? null
+                : null
               return (
                 <div key={generation._id} className="flex flex-col gap-6 py-6 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-center justify-between gap-4">
@@ -354,6 +425,7 @@ function PracticeCoach() {
                           setDeleteError(null)
                           setSessionToDelete(generation._id)
                         }}
+                        disabled={isRowLoaded && isPlaying}
                         aria-label="Delete session"
                         className="shrink-0 text-muted-foreground"
                       >
@@ -362,7 +434,32 @@ function PracticeCoach() {
                     </div>
                   </div>
 
-                  {isRowLoaded && audioError && <p className="text-sm text-destructive">{audioError}</p>}
+                  {audioErrorRowId === generation._id && audioError && (
+                    <p className="text-sm text-destructive">{audioError}</p>
+                  )}
+
+                  {isRowLoaded && (
+                    <AnimatePresence mode="wait">
+                      {activeQuestion && (
+                        <motion.div
+                          key={activeQuestion}
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          transition={{ duration: 0.25 }}
+                          className="rounded-xl border border-primary/30 bg-primary/5 p-3.5"
+                        >
+                          <p className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-primary uppercase">
+                            <ListChecks className="size-3.5" />
+                            Now practicing
+                          </p>
+                          <p className="mt-1 text-sm font-medium leading-snug text-foreground">
+                            {activeQuestion}
+                          </p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  )}
 
                   {isRowLoaded && (
                     <div className="flex items-center gap-3">
@@ -417,7 +514,11 @@ function PracticeCoach() {
           className="hidden"
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
-          onEnded={() => setIsPlaying(false)}
+          onEnded={(e) => {
+            setIsPlaying(false)
+            e.currentTarget.currentTime = 0
+            setCurrentTime(0)
+          }}
           onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
           onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
         />
@@ -495,6 +596,76 @@ function PracticeCoach() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={questionsNoticeOpen} onOpenChange={setQuestionsNoticeOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Sparkles className="size-5" />
+            </div>
+            <DialogTitle className="mt-3">Practice more than just one?</DialogTitle>
+            <DialogDescription>
+              You&apos;ve picked just 1 question so far. On the free plan you can choose{" "}
+              <span className="font-semibold text-primary">
+                {FREE_PLAN_MAX_QUESTIONS - selectedQuestions.length} more
+              </span>{" "}
+              before generating your script - the more you pick, the more targeted practice you get.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuestionsNoticeOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setQuestionsNoticeOpen(false)
+                runGeneration()
+              }}
+            >
+              Proceed
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={upgradeNoticeOpen} onOpenChange={setUpgradeNoticeOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Lock className="size-5" />
+            </div>
+            <DialogTitle className="mt-3">Upgrade to select more questions</DialogTitle>
+            <DialogDescription>
+              The free plan lets you pick up to {FREE_PLAN_MAX_QUESTIONS} questions per practice
+              session. Upgrade your plan to select more at once.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUpgradeNoticeOpen(false)}>
+              Maybe later
+            </Button>
+            <Button render={<Link href="/upgrade" />}>
+              <Sparkles />
+              Upgrade Plan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!invalidFileNotice} onOpenChange={(open) => { if (!open) setInvalidFileNotice(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <div className="flex size-11 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
+              <AlertTriangle className="size-5" />
+            </div>
+            <DialogTitle className="mt-3">Unsupported file type</DialogTitle>
+            <DialogDescription>{invalidFileNotice}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setInvalidFileNotice(null)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Generation form */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
@@ -547,7 +718,7 @@ function PracticeCoach() {
               <FileText className="size-4 text-primary" />
               Upload Resume
             </label>
-            <FileUpload key={resumeUploadKey} onChange={(files) => setResumeFile(files[0] ?? null)} />
+            <FileUpload key={resumeUploadKey} onChange={onResumeFileChange} />
           </div>
 
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
@@ -574,6 +745,112 @@ function PracticeCoach() {
               value={jobDescription}
               onChange={(e) => setJobDescription(e.target.value)}
             />
+          </div>
+
+          <div className="relative space-y-4 overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-4 shadow-sm shadow-primary/10 sm:p-5">
+            <div className="pointer-events-none absolute -right-8 -top-10 size-32 rounded-full bg-primary/15 blur-2xl" />
+
+            <div className="relative flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="relative flex size-10 shrink-0 items-center justify-center">
+                  <motion.span
+                    className="absolute inset-0 rounded-full bg-primary/25"
+                    animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
+                    transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+                  />
+                  <div className="relative flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md shadow-primary/30">
+                    <ListChecks className="size-5" />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-base font-bold tracking-tight text-foreground">
+                      Practice Questions
+                    </label>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[0.65rem] font-semibold text-primary-foreground">
+                      <Sparkles className="size-3" />
+                      Recommended
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs font-medium text-muted-foreground">
+                    Pick the questions you&apos;d like this session&apos;s script to focus on.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-bold tabular-nums",
+                    selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-primary/10 text-primary"
+                  )}
+                >
+                  {selectedQuestions.length}/{FREE_PLAN_MAX_QUESTIONS} selected
+                </span>
+                <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide text-muted-foreground uppercase">
+                  Free plan
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              {PRACTICE_QUESTIONS.map((question, index) => {
+                const isSelected = selectedQuestions.includes(question)
+                const isAtCap = !isSelected && selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
+                return (
+                  <motion.button
+                    key={question}
+                    type="button"
+                    onClick={() => onToggleQuestion(question)}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2, delay: Math.min(index, 10) * 0.02 }}
+                    className={cn(
+                      "group relative flex items-start gap-2.5 rounded-xl border p-3 text-left text-sm transition-all",
+                      isSelected
+                        ? "border-primary bg-primary/10 text-foreground shadow-sm shadow-primary/10"
+                        : isAtCap
+                          ? "border-border/60 bg-muted/10 text-muted-foreground/70"
+                          : "border-border bg-muted/20 text-foreground hover:border-primary/40 hover:bg-primary/5"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border transition-colors",
+                        isSelected
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-background text-transparent"
+                      )}
+                    >
+                      <CheckCircle2 className="size-3.5" />
+                    </span>
+                    <span className="flex-1 leading-snug">{question}</span>
+                    {isAtCap && (
+                      <Lock className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/60" />
+                    )}
+                  </motion.button>
+                )
+              })}
+            </div>
+
+            <AnimatePresence>
+              {selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="flex items-center justify-between gap-3 overflow-hidden rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs"
+                >
+                  <span className="text-muted-foreground">
+                    You&apos;ve hit the free plan&apos;s {FREE_PLAN_MAX_QUESTIONS}-question limit.
+                  </span>
+                  <Button size="xs" variant="outline" render={<Link href="/upgrade" />}>
+                    Upgrade
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </motion.div>

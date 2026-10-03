@@ -65,6 +65,12 @@ export default defineSchema({
       resumeUrl: v.optional(v.string()),
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
+      selectedQuestions: v.optional(v.array(v.string())),
+      // Per-question narration start times (seconds into audioUrl), used to
+      // show only the question currently being read during playback.
+      questionTimeline: v.optional(
+        v.array(v.object({ question: v.string(), startTime: v.number() }))
+      ),
       webhookResponse: v.any(),
       audioUrl: v.optional(v.string()),
       createdAt: v.number(),
