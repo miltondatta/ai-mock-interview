@@ -28,7 +28,7 @@ import { useRouter } from 'next/navigation'
 function CreateInterviewDialog() {
   const [file, setFile] = useState<File|null>();
   const [loading,setLoading] = useState(false);
-  const [formData,setFormData] = useState<any>({ level: 'basic', qno: '3' });
+  const [formData,setFormData] = useState<any>({ mode: 'technical', level: 'basic', qno: '3' });
   const [interviewId,setInterviewId] = useState<string|null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const {userDetail,setUserDetail}=useContext(UserDetailContext);
@@ -43,7 +43,7 @@ function CreateInterviewDialog() {
       // Fresh "Create Interview" session - clear any leftover state from a
       // previous run so Generate Questions/Start Interview start disabled again.
       setFile(null);
-      setFormData({ level: 'basic', qno: '3' });
+      setFormData({ mode: 'technical', level: 'basic', qno: '3' });
       setInterviewId(null);
     }
     setDialogOpen(next);
@@ -126,7 +126,7 @@ function CreateInterviewDialog() {
                 </div>
             </DialogHeader>
 
-            <div className='px-6 py-5'>
+            <div className='max-h-[65vh] overflow-y-auto px-6 py-5'>
                 <Tabs defaultValue="resume-upload" className="max-w-full">
                     <TabsList className='w-full'>
                         <TabsTrigger value="resume-upload"><UploadCloud />Resume Upload</TabsTrigger>
@@ -137,6 +137,7 @@ function CreateInterviewDialog() {
                 </Tabs>
 
                 <InterviewOptions
+                    mode={formData?.mode ?? 'technical'}
                     level={formData?.level ?? 'basic'}
                     qno={String(formData?.qno ?? '3')}
                     onHandleInputChange={onHandleInputChange}

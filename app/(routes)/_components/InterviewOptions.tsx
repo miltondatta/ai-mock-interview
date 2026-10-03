@@ -3,7 +3,21 @@
 import React, { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { Gauge, Hash } from 'lucide-react'
+import { Gauge, Hash, ListChecks } from 'lucide-react'
+
+const INTERVIEW_MODES = [
+  { value: 'hr', label: 'HR Interview' },
+  { value: 'technical', label: 'Technical' },
+  { value: 'behavioral', label: 'Behavioral (STAR-based)' },
+  { value: 'managerial', label: 'Managerial (Leadership & Management)' },
+  { value: 'system-design', label: 'System Design' },
+  { value: 'coding', label: 'Coding' },
+  { value: 'case-study', label: 'Case Study (Business Scenarios)' },
+  { value: 'graduate-fresher', label: 'Graduate/Fresher' },
+  { value: 'executive', label: 'Executive' },
+  { value: 'stress', label: 'Stress Interview' },
+  { value: 'rapid-fire', label: 'Rapid Fire' },
+]
 
 const LEVELS = [
   { value: 'basic', label: 'Basic' },
@@ -18,6 +32,7 @@ const QUESTION_COUNTS = [
 ]
 
 interface InterviewOptionsProps {
+  mode: string
   level: string
   qno: string
   onHandleInputChange: (field: string, value: string) => void
@@ -48,15 +63,15 @@ function OptionPill({
   )
 }
 
-function InterviewOptions({ level, qno, onHandleInputChange }: InterviewOptionsProps) {
+function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOptionsProps) {
   const isCustomQno = qno !== '3' && qno !== '5'
   const [qnoMode, setQnoMode] = useState<'3' | '5' | 'custom'>(isCustomQno ? 'custom' : (qno as '3' | '5'))
   const [customValue, setCustomValue] = useState(isCustomQno ? qno : '')
   const isCustomValueInvalid = qnoMode === 'custom' && customValue !== '' && Number(customValue) < 1
 
-  const handleQnoModeChange = (mode: '3' | '5' | 'custom') => {
-    setQnoMode(mode)
-    onHandleInputChange('qno', mode === 'custom' ? customValue : mode)
+  const handleQnoModeChange = (nextQnoMode: '3' | '5' | 'custom') => {
+    setQnoMode(nextQnoMode)
+    onHandleInputChange('qno', nextQnoMode === 'custom' ? customValue : nextQnoMode)
   }
 
   const handleCustomValueChange = (value: string) => {
@@ -67,6 +82,24 @@ function InterviewOptions({ level, qno, onHandleInputChange }: InterviewOptionsP
   return (
     <div className="mt-5 rounded-2xl border border-border bg-muted/20 p-6 md:p-8">
       <div>
+        <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+          <ListChecks className="size-4 text-primary" />
+          Interview Modes
+        </label>
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {INTERVIEW_MODES.map((option) => (
+            <OptionPill
+              key={option.value}
+              selected={mode === option.value}
+              onClick={() => onHandleInputChange('mode', option.value)}
+            >
+              {option.label}
+            </OptionPill>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-5">
         <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           <Gauge className="size-4 text-primary" />
           Interview Level
