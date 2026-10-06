@@ -2,27 +2,53 @@
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Briefcase, CheckCircle2, Gauge, Hash } from 'lucide-react'
-import React from 'react'
+import { ArrowRight, Briefcase, CheckCircle2, Gauge, Hash, ListChecks, Loader2Icon, Trash2 } from 'lucide-react'
+import React, { useContext, useState } from 'react'
 import { Doc } from '@/convex/_generated/dataModel'
+import { useMutation } from 'convex/react'
+import { api } from '@/convex/_generated/api'
+import { UserDetailContext } from '@/context/UserDetailContext'
+import { INTERVIEW_MODES } from '../_components/InterviewOptions'
 
-const SUMMARY_MAX_LENGTH = 110;
-
-function summarize(text: string) {
-  const normalized = text.trim().replace(/\s+/g, ' ');
-  return normalized.length > SUMMARY_MAX_LENGTH
-    ? `${normalized.slice(0, SUMMARY_MAX_LENGTH).trimEnd()}...`
-    : normalized;
+function getModeLabel(mode?: string) {
+  return INTERVIEW_MODES.find((option) => option.value === mode)?.label;
 }
 
 function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> }) {
   const router = useRouter();
+  const { userDetail } = useContext(UserDetailContext);
+  const deleteInterview = useMutation(api.Interview.DeleteInterview);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const isCompleted = interview.status === 'completed';
-  const isJobDescriptionType = !!interview.jobDescription;
+  const modeLabel = getModeLabel(interview.mode);
 
   const onStartInterview = () => {
     router.push(`/interview/${interview._id}/start`);
+  }
+
+  const onDeleteInterview = async () => {
+    if (!userDetail?._id) return;
+    setDeleting(true);
+    try {
+      await deleteInterview({ interviewId: interview._id, userId: userDetail._id });
+      setDeleteDialogOpen(false);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -31,20 +57,45 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
         <div className='flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary'>
           <Briefcase className='size-5' />
         </div>
-        <Badge variant={isCompleted ? 'success' : 'secondary'}>
-          {isCompleted && <CheckCircle2 className='size-3' />}
-          {isCompleted ? 'Complete' : 'Draft'}
-        </Badge>
+        <div className='flex items-center gap-2'>
+          <Badge variant={isCompleted ? 'success' : 'secondary'}>
+            {isCompleted && <CheckCircle2 className='size-3' />}
+            {isCompleted ? 'Complete' : 'Draft'}
+          </Badge>
+          <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+            <DialogTrigger render={<Button variant='ghost' size='icon-sm' className='text-muted-foreground hover:text-destructive' />}>
+              <Trash2 className='size-4' />
+              <span className='sr-only'>Delete interview</span>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete this interview?</DialogTitle>
+                <DialogDescription>
+                  This will permanently delete this interview and all its data, including questions, transcript and feedback. This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <DialogClose render={<Button variant='outline' />} disabled={deleting}>
+                  Cancel
+                </DialogClose>
+                <Button variant='destructive' onClick={onDeleteInterview} disabled={deleting}>
+                  {deleting ? <Loader2Icon className='animate-spin' /> : <Trash2 />} Delete
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
       <div>
         <h3 className='font-semibold text-base leading-snug'>{interview.jobTitle || 'Resume-based Interview'}</h3>
-        <p className='mt-1.5 text-sm text-muted-foreground'>
-          {isJobDescriptionType
-            ? summarize(interview.jobDescription as string)
-            : interview.resumeFileName || 'Resume'}
-        </p>
-        {(interview.level || interview.qno) && (
+        {(modeLabel || interview.level || interview.qno) && (
           <div className='mt-2.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground'>
+            {modeLabel && (
+              <span className='flex items-center gap-1'>
+                <ListChecks className='size-3.5 text-primary' />
+                Mode: <span className='font-medium text-foreground'>{modeLabel}</span>
+              </span>
+            )}
             {interview.level && (
               <span className='flex items-center gap-1'>
                 <Gauge className='size-3.5 text-primary' />

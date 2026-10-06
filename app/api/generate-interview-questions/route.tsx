@@ -91,6 +91,7 @@ export async function POST(req:NextRequest) {
     const file = formData.get('file') as File | null;
     const jobTitle = formData.get('jobTitle') as string | null;
     const jobDescription = formData.get('jobDescription') as string | null;
+    const mode = (formData.get('mode') as string | null) || 'technical';
     const level = (formData.get('level') as string | null) || 'basic';
     const qno = (formData.get('qno') as string | null) || '3';
     const hasFile = !!file && file.size > 0;
@@ -132,12 +133,14 @@ export async function POST(req:NextRequest) {
         //Call N8N workflow - same webhook handles resume-based and jobTitle/jobDescription-based generation
         const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question", hasFile ? {
             resumeUrl,
+            mode,
             level,
             qno
         } : {
             resumeUrl: null,
             jobTitle,
             jobDescription,
+            mode,
             level,
             qno
         }, {

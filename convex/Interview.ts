@@ -9,6 +9,7 @@ export const SaveInterviewQuestions = mutation({
         resumeFileName: v.optional(v.string()),
         jobTitle: v.optional(v.string()),
         jobDescription: v.optional(v.string()),
+        mode: v.optional(v.string()),
         level: v.optional(v.string()),
         qno: v.optional(v.number())
     },
@@ -19,6 +20,7 @@ export const SaveInterviewQuestions = mutation({
             resumeFileName: args.resumeFileName,
             jobTitle: args.jobTitle,
             jobDescription: args.jobDescription,
+            mode: args.mode,
             level: args.level,
             qno: args.qno,
             userId: args.uid,
@@ -139,6 +141,20 @@ export const CompleteInterview = mutation({
         }
         await ctx.db.patch(args.interviewId, { status: 'completed' });
         return await ctx.db.get(args.interviewId);
+    }
+});
+
+export const DeleteInterview = mutation({
+    args: {
+        interviewId: v.id('InterviewSessionTable'),
+        userId: v.id('UserTable')
+    },
+    handler: async (ctx, args) => {
+        const interview = await ctx.db.get(args.interviewId);
+        if (!interview || interview.userId !== args.userId) {
+            throw new Error('Interview not found');
+        }
+        await ctx.db.delete(args.interviewId);
     }
 });
 

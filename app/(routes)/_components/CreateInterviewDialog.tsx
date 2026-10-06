@@ -65,6 +65,7 @@ function CreateInterviewDialog() {
     if(file) formData_.append('file',file);
     formData_.append('jobTitle',formData?.jobTitle??'');
     formData_.append('jobDescription',formData?.jobDescription??'');
+    formData_.append('mode',formData?.mode || 'technical');
     formData_.append('level',formData?.level || 'basic');
     formData_.append('qno',String(formData?.qno || '3'));
 
@@ -79,6 +80,7 @@ function CreateInterviewDialog() {
             resumeFileName: res.data?.resumeFileName ?? undefined,
             jobTitle: formData?.jobTitle || undefined,
             jobDescription: formData?.jobDescription || undefined,
+            mode: formData?.mode || undefined,
             level: formData?.level || undefined,
             qno: Number(formData?.qno) || undefined,
             uid: userDetail?._id

@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { Gauge, Hash, ListChecks } from 'lucide-react'
 
-const INTERVIEW_MODES = [
+export const INTERVIEW_MODES = [
   { value: 'hr', label: 'HR Interview' },
   { value: 'technical', label: 'Technical' },
   { value: 'behavioral', label: 'Behavioral (STAR-based)' },
@@ -13,6 +13,7 @@ const INTERVIEW_MODES = [
   { value: 'system-design', label: 'System Design' },
   { value: 'coding', label: 'Coding' },
   { value: 'case-study', label: 'Case Study (Business Scenarios)' },
+  { value: 'project-management', label: 'Project Management' },
   { value: 'graduate-fresher', label: 'Graduate/Fresher' },
   { value: 'executive', label: 'Executive' },
   { value: 'stress', label: 'Stress Interview' },
