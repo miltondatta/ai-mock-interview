@@ -2,9 +2,11 @@
 
 import { useUser } from '@clerk/nextjs'
 import React, { useContext } from 'react'
+import Link from 'next/link'
 import EmptyState from './EmptyState';
-import CreateInterviewDialog from '../_components/CreateInterviewDialog';
 import InterviewCard from './InterviewCard';
+import { Button } from '@/components/ui/button';
+import { Plus } from 'lucide-react';
 import { useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import { UserDetailContext } from '@/context/UserDetailContext';
@@ -27,14 +29,16 @@ function Dashboard() {
             Welcome back{user?.fullName ? `, ${user.fullName}` : ""}
           </h1>
         </div>
-        <CreateInterviewDialog />
+        <Button size="lg" nativeButton={false} render={<Link href="/create-interview" />}>
+          <Plus />Create Interview
+        </Button>
       </div>
 
       {interviewList && (
         <>
           {/* Both branches stay mounted and are toggled with CSS (not unmounted via a
-              ternary) so a CreateInterviewDialog left open inside EmptyState isn't
-              destroyed mid-flow the instant this list flips from empty to non-empty. */}
+              ternary) to avoid a remount flicker the instant this list flips
+              between empty and non-empty. */}
           <div className={interviewList.length > 0 ? 'mt-10 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3' : 'hidden'}>
             {interviewList.map((interview) => (
               <InterviewCard key={interview._id} interview={interview} />

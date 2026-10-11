@@ -1,6 +1,8 @@
 
 import React from 'react'
-import CreateInterviewDialog from '../_components/CreateInterviewDialog'
+import Link from 'next/link'
+import { Plus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 
 function EmptyState() {
   return (
@@ -12,7 +14,9 @@ function EmptyState() {
             Create your first mock interview by uploading a resume or pasting a job description.
           </p>
         </div>
-        <CreateInterviewDialog />
+        <Button size="lg" nativeButton={false} render={<Link href="/create-interview" />}>
+          <Plus />Create Interview
+        </Button>
     </div>
   )
 }

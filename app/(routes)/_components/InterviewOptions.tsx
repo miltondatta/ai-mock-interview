@@ -27,8 +27,8 @@ const LEVELS = [
 ]
 
 const QUESTION_COUNTS = [
+  { value: '2', label: '2' },
   { value: '3', label: '3' },
-  { value: '5', label: '5' },
   { value: 'custom', label: 'Custom' },
 ]
 
@@ -65,12 +65,12 @@ function OptionPill({
 }
 
 function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOptionsProps) {
-  const isCustomQno = qno !== '3' && qno !== '5'
-  const [qnoMode, setQnoMode] = useState<'3' | '5' | 'custom'>(isCustomQno ? 'custom' : (qno as '3' | '5'))
+  const isCustomQno = qno !== '2' && qno !== '3'
+  const [qnoMode, setQnoMode] = useState<'2' | '3' | 'custom'>(isCustomQno ? 'custom' : (qno as '2' | '3'))
   const [customValue, setCustomValue] = useState(isCustomQno ? qno : '')
   const isCustomValueInvalid = qnoMode === 'custom' && customValue !== '' && Number(customValue) < 1
 
-  const handleQnoModeChange = (nextQnoMode: '3' | '5' | 'custom') => {
+  const handleQnoModeChange = (nextQnoMode: '2' | '3' | 'custom') => {
     setQnoMode(nextQnoMode)
     onHandleInputChange('qno', nextQnoMode === 'custom' ? customValue : nextQnoMode)
   }
@@ -81,7 +81,7 @@ function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOp
   }
 
   return (
-    <div className="mt-5 rounded-2xl border border-border bg-muted/20 p-6 md:p-8">
+    <div className="mt-5">
       <div>
         <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           <ListChecks className="size-4 text-primary" />
@@ -128,7 +128,7 @@ function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOp
             <OptionPill
               key={option.value}
               selected={qnoMode === option.value}
-              onClick={() => handleQnoModeChange(option.value as '3' | '5' | 'custom')}
+              onClick={() => handleQnoModeChange(option.value as '2' | '3' | 'custom')}
             >
               {option.label}
             </OptionPill>

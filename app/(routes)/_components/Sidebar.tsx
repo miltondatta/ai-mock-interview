@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
@@ -34,6 +34,11 @@ const MenuOptions = [
     name: "How it works?",
     path: "/how-it-works",
     icon: CircleHelp,
+  },
+  {
+    name: "Settings",
+    path: "/settings",
+    icon: Settings,
   },
 ]
 

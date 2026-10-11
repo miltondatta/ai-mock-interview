@@ -94,6 +94,7 @@ export async function POST(req:NextRequest) {
     const mode = (formData.get('mode') as string | null) || 'technical';
     const level = (formData.get('level') as string | null) || 'basic';
     const qno = (formData.get('qno') as string | null) || '3';
+    const lang = (formData.get('lang') as string | null) || 'en';
     const hasFile = !!file && file.size > 0;
     // Paused until package/credit options are integrated - resume by uncommenting.
     // const rateLimitUserId = user?.primaryEmailAddress?.emailAddress??'';
@@ -135,14 +136,16 @@ export async function POST(req:NextRequest) {
             resumeUrl,
             mode,
             level,
-            qno
+            qno,
+            lang
         } : {
             resumeUrl: null,
             jobTitle,
             jobDescription,
             mode,
             level,
-            qno
+            qno,
+            lang
         }, {
             timeout: 280000 // stay just under the 300s proxy/maxDuration ceiling
         });

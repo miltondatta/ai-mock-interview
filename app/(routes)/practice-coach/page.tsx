@@ -643,7 +643,7 @@ function PracticeCoach() {
             <Button variant="outline" onClick={() => setUpgradeNoticeOpen(false)}>
               Maybe later
             </Button>
-            <Button render={<Link href="/upgrade" />}>
+            <Button nativeButton={false} render={<Link href="/upgrade" />}>
               <Sparkles />
               Upgrade Plan
             </Button>
@@ -845,7 +845,7 @@ function PracticeCoach() {
                   <span className="text-muted-foreground">
                     You&apos;ve hit the free plan&apos;s {FREE_PLAN_MAX_QUESTIONS}-question limit.
                   </span>
-                  <Button size="xs" variant="outline" render={<Link href="/upgrade" />}>
+                  <Button size="xs" variant="outline" nativeButton={false} render={<Link href="/upgrade" />}>
                     Upgrade
                   </Button>
                 </motion.div>

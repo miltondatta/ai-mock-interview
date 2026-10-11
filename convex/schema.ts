@@ -59,6 +59,16 @@ export default defineSchema({
       updatedAt: v.number(),
     }),
 
+    // Candidate-facing Settings page (app/(routes)/settings) - Language tab.
+    // One row per user; upserted on save rather than appended.
+    UserSettingsTable: defineTable({
+      userId: v.id('UserTable'),
+      interviewLanguage: v.optional(v.string()),
+      feedbackLanguage: v.optional(v.string()),
+      practiceCoachLanguage: v.optional(v.string()),
+      updatedAt: v.number(),
+    }),
+
     // Practice Coach: one row per "Generate Video" call, recording what was sent
     // to the N8N webhook and the response it returned.
     PracticeCoachTable: defineTable({
