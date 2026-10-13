@@ -134,7 +134,6 @@ function ReviewStep({
         <SectionCard icon={Globe} title="Language Settings" onEdit={onEditLanguageSettings}>
           <Row label="Interview Language" value={getLanguageLabel(languages.interviewLanguage)} />
           <Row label="Feedback Language" value={getLanguageLabel(languages.feedbackLanguage)} />
-          <Row label="Practice Coach Language" value={getLanguageLabel(languages.practiceCoachLanguage)} />
         </SectionCard>
       </div>
 

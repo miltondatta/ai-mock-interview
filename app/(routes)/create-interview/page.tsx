@@ -34,7 +34,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
     jobDescription: "",
     mode: "technical",
     level: "basic",
-    qno: "3",
+    qno: "2",
   })
   const [languages, setLanguages] = useState<LanguageSelection>(initialLanguages)
   const [loading, setLoading] = useState(false)
@@ -115,7 +115,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
               : "Please review your choices before generating the interview questions."}
           </p>
         </div>
-        <Button variant="outline" nativeButton={false} render={<Link href="/dashboard" />}>
+        <Button nativeButton={false} render={<Link href="/dashboard" />}>
           <ArrowLeft />
           Back to Dashboard
         </Button>
@@ -126,6 +126,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
           <FormStep
             formData={formData}
             onHandleInputChange={onHandleInputChange}
+            file={file}
             onFileSelected={setFile}
             languages={languages}
             onLanguageChange={onLanguageChange}

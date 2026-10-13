@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { ArrowRight, Briefcase, FileText, Globe, BookOpen, Mic, SlidersHorizontal, UploadCloud } from "lucide-react"
+import { ArrowRight, Briefcase, FileText, Globe, Mic, SlidersHorizontal, UploadCloud } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,7 @@ const JOB_DESCRIPTION_MAX_LENGTH = 5000
 interface FormStepProps {
   formData: CreateInterviewFormData
   onHandleInputChange: (field: string, value: string) => void
+  file: File | null
   onFileSelected: (file: File) => void
   languages: LanguageSelection
   onLanguageChange: (field: keyof LanguageSelection, value: string) => void
@@ -26,6 +27,7 @@ interface FormStepProps {
 function FormStep({
   formData,
   onHandleInputChange,
+  file,
   onFileSelected,
   languages,
   onLanguageChange,
@@ -35,9 +37,9 @@ function FormStep({
 }: FormStepProps) {
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         {/* Job Information */}
-        <div className="rounded-2xl border border-border bg-card p-5 md:p-6">
+        <div className="rounded-2xl border border-border bg-card p-6 md:p-8">
           <div className="flex items-start gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Briefcase className="size-5" />
@@ -48,7 +50,7 @@ function FormStep({
             </div>
           </div>
 
-          <div className="mt-5">
+          <div className="mt-6">
             <label className="text-sm font-medium text-foreground">
               Job Title <span className="text-destructive">*</span>
             </label>
@@ -60,7 +62,7 @@ function FormStep({
             />
           </div>
 
-          <div className="mt-4">
+          <div className="mt-5">
             <label className="text-sm font-medium text-foreground">Company Name (Optional)</label>
             <Input
               placeholder="e.g. ABC Corporation"
@@ -70,17 +72,17 @@ function FormStep({
             />
           </div>
 
-          <div className="mt-5">
+          <div className="mt-6">
             <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
               <UploadCloud className="size-4 text-primary" />
               Resume Upload
             </label>
             <div className="mt-2">
-              <ResumeUpload setFiles={onFileSelected} />
+              <ResumeUpload setFiles={onFileSelected} file={file} />
             </div>
           </div>
 
-          <div className="mt-5">
+          <div className="mt-6">
             <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
               <FileText className="size-4 text-primary" />
               Job Description
@@ -103,15 +105,15 @@ function FormStep({
           </div>
         </div>
 
-        {/* Job Preferences + Language Settings */}
+        {/* Interview Preference + Language Settings */}
         <div className="flex flex-col gap-6">
-          <div className="rounded-2xl border border-border bg-card p-5 md:p-6">
+          <div className="rounded-2xl border border-border bg-card p-4 md:p-5">
             <div className="flex items-start gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <SlidersHorizontal className="size-5" />
               </div>
               <div>
-                <h2 className="font-bold text-foreground">Job Preferences</h2>
+                <h2 className="font-bold text-foreground">Interview Preference</h2>
                 <p className="mt-0.5 text-sm text-muted-foreground">Choose your interview type and question settings.</p>
               </div>
             </div>
@@ -124,7 +126,7 @@ function FormStep({
             />
           </div>
 
-          <div className="rounded-2xl border border-border bg-card p-5 md:p-6">
+          <div className="rounded-2xl border border-border bg-card p-4 md:p-5">
             <div className="flex items-start gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Globe className="size-5" />
@@ -153,14 +155,6 @@ function FormStep({
                 description="Language used for interview evaluation, score explanation and improvement suggestions."
                 value={languages.feedbackLanguage}
                 onChange={(value) => onLanguageChange("feedbackLanguage", value)}
-              />
-              <LanguageSelectRow
-                icon={BookOpen}
-                iconClassName="bg-violet-500/10 text-violet-500"
-                title="Practice Coach Language"
-                description="Language used by the Practice Coach to generate sample answers, scripts and learning materials."
-                value={languages.practiceCoachLanguage}
-                onChange={(value) => onLanguageChange("practiceCoachLanguage", value)}
               />
             </div>
           </div>

@@ -7,10 +7,12 @@ import { useDropzone } from "react-dropzone";
 
 export const FileUpload = ({
   onChange,
+  initialFiles,
 }: {
   onChange?: (files: File[]) => void;
+  initialFiles?: File[];
 }) => {
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>(initialFiles ?? []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (newFiles: File[]) => {

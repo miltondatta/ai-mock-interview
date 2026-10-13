@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { FileUpload } from "@/components/ui/file-upload";
 
-function ResumeUpload({setFiles}:any) {
+function ResumeUpload({setFiles, file}:any) {
     //const [files, setFiles] = useState<File[]>([]);
     const handleFileUpload = (files: File[]) => {
         setFiles(files[0]);
@@ -11,7 +11,7 @@ function ResumeUpload({setFiles}:any) {
     };
     return (
         <div className="w-full max-w-4xl mx-auto">
-            <FileUpload onChange={handleFileUpload} />
+            <FileUpload onChange={handleFileUpload} initialFiles={file ? [file] : undefined} />
         </div>
     )
 }
