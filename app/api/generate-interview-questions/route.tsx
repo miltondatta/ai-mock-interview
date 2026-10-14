@@ -5,6 +5,7 @@ import axios from "axios";
 import { currentUser } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { sanitizeFreeText } from "@/utils/sanitizeText";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -90,7 +91,12 @@ export async function POST(req:NextRequest) {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const jobTitle = formData.get('jobTitle') as string | null;
-    const jobDescription = formData.get('jobDescription') as string | null;
+    const companyName = (formData.get('companyName') as string | null) ?? '';
+    // Pasted job posts drag along bullet glyphs, smart quotes/dashes, and
+    // inconsistent line endings that can confuse the n8n prompt - normalize
+    // before it's sent, same as the Practice Coach generation route.
+    const jobDescriptionRaw = formData.get('jobDescription') as string | null;
+    const jobDescription = jobDescriptionRaw ? sanitizeFreeText(jobDescriptionRaw) : jobDescriptionRaw;
     const mode = (formData.get('mode') as string | null) || 'technical';
     const level = (formData.get('level') as string | null) || 'basic';
     const qno = (formData.get('qno') as string | null) || '3';
@@ -132,17 +138,12 @@ export async function POST(req:NextRequest) {
         }
 
         //Call N8N workflow - same webhook handles resume-based and jobTitle/jobDescription-based generation
-        const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question", hasFile ? {
+        const result = await axios.post("https://n8n.vistechsolutions.online/webhook/generate-interview-question", {
             resumeUrl,
-            mode,
-            level,
-            qno,
-            lang
-        } : {
-            resumeUrl: null,
-            jobTitle,
-            jobDescription,
-            mode,
+            job_title: jobTitle,
+            company: companyName,
+            job_desc: jobDescription,
+            modes: mode,
             level,
             qno,
             lang

@@ -10,6 +10,14 @@ import { api } from "@/convex/_generated/api"
 import { Id } from "@/convex/_generated/dataModel"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import FormStep from "./FormStep"
 import ReviewStep from "./ReviewStep"
 import { CreateInterviewFormData, LanguageSelection } from "./types"
@@ -39,6 +47,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
   const [languages, setLanguages] = useState<LanguageSelection>(initialLanguages)
   const [loading, setLoading] = useState(false)
   const [interviewId, setInterviewId] = useState<string | null>(null)
+  const [formNotice, setFormNotice] = useState<{ type: "resume-missing" | "description-missing"; message: string } | null>(null)
 
   const saveInterviewQuestion = useMutation(api.Interview.SaveInterviewQuestions)
 
@@ -55,6 +64,28 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
 
   const onNext = () => {
     if (!canProceed) return
+
+    // Resume present but no job description - nudge toward adding both for
+    // more relevant questions, but let the candidate proceed with just the resume.
+    if (file && !formData.jobDescription.trim()) {
+      setFormNotice({
+        type: "description-missing",
+        message:
+          "You haven't added a Job Description. Providing both your Resume and the Job Description helps us generate more relevant interview questions.",
+      })
+      return
+    }
+
+    // Job description present but no resume - same nudge, the other way around.
+    if (!file && formData.jobDescription.trim()) {
+      setFormNotice({
+        type: "resume-missing",
+        message:
+          "You haven't uploaded a Resume. Providing both your Resume and the Job Description helps us generate more relevant interview questions.",
+      })
+      return
+    }
+
     setStep("review")
   }
 
@@ -63,6 +94,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
     const formData_ = new FormData()
     if (file) formData_.append("file", file)
     formData_.append("jobTitle", formData.jobTitle ?? "")
+    formData_.append("companyName", formData.companyName ?? "")
     formData_.append("jobDescription", formData.jobDescription ?? "")
     formData_.append("mode", formData.mode || "technical")
     formData_.append("level", formData.level || "basic")
@@ -151,6 +183,35 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
           />
         )}
       </div>
+
+      <Dialog
+        open={!!formNotice}
+        onOpenChange={(open) => {
+          if (!open) setFormNotice(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {formNotice?.type === "resume-missing" ? "Add your resume for better questions" : "Add a job description for better questions"}
+            </DialogTitle>
+            <DialogDescription>{formNotice?.message}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFormNotice(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setFormNotice(null)
+                setStep("review")
+              }}
+            >
+              Proceed
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
