@@ -48,6 +48,34 @@ function parsePlainTextQA(text: string): { question: string; answer: string }[] 
     return results.filter((item) => item.question);
 }
 
+// n8n/Gemini often wraps the JSON payload in a markdown code fence (```json ... ```)
+// instead of returning bare JSON, which makes JSON.parse throw outright. Strip the
+// fence (if present) before parsing.
+function stripMarkdownCodeFence(text: string): string {
+    const match = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    return match ? match[1] : text.trim();
+}
+
+// Pulls the question/answer pair out of a question object regardless of which key
+// names n8n used for them - it has used both the old "Q.1"/"A.1" style keys and the
+// current "question"/"model_answer" keys (alongside an unrelated "question_number"
+// key that also happens to start with "Q", which a naive startsWith("Q") match would
+// pick up instead of the real question text).
+function pickQuestionAnswer(item: Record<string, unknown>): { question: string; answer: string } {
+    const entries = Object.entries(item);
+    const question =
+        entries.find(([key]) => /^q(uestion)?$/i.test(key))?.[1] ??
+        entries.find(([key]) => /question/i.test(key) && !/number/i.test(key))?.[1] ??
+        entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ??
+        "";
+    const answer =
+        entries.find(([key]) => /^a(nswer)?$/i.test(key))?.[1] ??
+        entries.find(([key]) => /answer/i.test(key))?.[1] ??
+        entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ??
+        "";
+    return { question: String(question ?? ""), answer: String(answer ?? "") };
+}
+
 function sanitizeJsonControlChars(text: string): string {
     let result = "";
     let inString = false;
@@ -83,6 +111,14 @@ function sanitizeJsonControlChars(text: string): string {
 export async function POST(req:NextRequest) {
     const user = await currentUser();
     if (!user) {
+        return NextResponse.json(
+            { error: "You must be logged in to create an interview." },
+            { status: 401 }
+        );
+    }
+    const email = user.primaryEmailAddress?.emailAddress ?? "";
+    const convexUser = await convexClient.query(api.users.GetUserByEmail, { email });
+    if (!convexUser) {
         return NextResponse.json(
             { error: "You must be logged in to create an interview." },
             { status: 401 }
@@ -158,25 +194,14 @@ export async function POST(req:NextRequest) {
         let allQuestions: { question: string; answer: string }[];
         if (typeof rawContent === "string") {
             try {
-                const parsedContent = JSON.parse(sanitizeJsonControlChars(rawContent));
-                // Normalize the "Q.1"/"A.1"-style keys into a plain { question, answer } list
-                allQuestions = (parsedContent?.questions ?? []).map((item: Record<string, string>) => {
-                    const entries = Object.entries(item);
-                    const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
-                    const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
-                    return { question, answer };
-                });
+                const parsedContent = JSON.parse(sanitizeJsonControlChars(stripMarkdownCodeFence(rawContent)));
+                allQuestions = (parsedContent?.questions ?? []).map(pickQuestionAnswer);
             } catch {
                 // Gemini didn't return JSON this time - fall back to parsing the plain "Q.1/A.1" text.
                 allQuestions = parsePlainTextQA(rawContent);
             }
         } else {
-            allQuestions = (rawContent?.questions ?? []).map((item: Record<string, string>) => {
-                const entries = Object.entries(item);
-                const question = entries.find(([key]) => key.toUpperCase().startsWith("Q"))?.[1] ?? "";
-                const answer = entries.find(([key]) => key.toUpperCase().startsWith("A"))?.[1] ?? "";
-                return { question, answer };
-            });
+            allQuestions = (rawContent?.questions ?? []).map(pickQuestionAnswer);
         }
 
         // N8N/Gemini doesn't always honor the requested question count - enforce it here
@@ -184,7 +209,27 @@ export async function POST(req:NextRequest) {
         const requestedQno = parseInt(qno, 10);
         const questions = requestedQno > 0 ? allQuestions.slice(0, requestedQno) : allQuestions;
 
+        // Save here, server-side, right after generation succeeds - the previous flow
+        // returned the questions to the browser and relied on a second, separate
+        // mutation call from the client to persist them. That extra round trip was a
+        // silent single point of failure: if it didn't complete, the questions were
+        // "generated" (this call succeeded) but never written to InterviewSessionTable,
+        // so the interview had nothing to continue into.
+        const interviewId = await convexClient.mutation(api.Interview.SaveInterviewQuestions, {
+            questions,
+            uid: convexUser._id,
+            resumeUrl: resumeUrl ?? undefined,
+            resumeFileName: hasFile ? file.name : undefined,
+            jobTitle: jobTitle ?? undefined,
+            jobDescription: jobDescription ?? undefined,
+            mode,
+            level,
+            qno: requestedQno,
+            lang,
+        });
+
         return NextResponse.json({
+            interviewId,
             questions,
             resumeUrl,
             resumeFileName: hasFile ? file.name : null,

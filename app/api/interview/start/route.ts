@@ -158,11 +158,14 @@ export async function POST(req: NextRequest) {
         );
     }
 
+    const language = interview.lang || "en";
+
     const dynamicVariables = buildInterviewDynamicVariables({
         candidateName: convexUser.name || "Candidate",
         questions,
         jobTitle: interview.jobTitle,
         jobDescription: interview.jobDescription,
+        language,
     });
 
     // Every call mints a fresh WebRTC conversation token - ElevenLabs has no
@@ -202,7 +205,7 @@ export async function POST(req: NextRequest) {
         });
 
         return NextResponse.json({
-            connection: { conversationToken, dynamicVariables },
+            connection: { conversationToken, dynamicVariables, language },
         });
     } catch (e) {
         console.error("Failed to start ElevenLabs conversation:", e);

@@ -152,25 +152,30 @@ function ReviewStep({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border pt-5">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
-          Cancel
-        </Button>
-        <Button type="button" variant="outline" onClick={onBack} disabled={loading}>
-          <ArrowLeft />
-          Back
-        </Button>
-        {interviewId ? (
-          <Button type="button" onClick={onStartInterview}>
-            Start Interview
-            <ArrowRight />
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
+        <p className="text-sm font-medium text-primary">
+          {loading ? "Generating the Questions. Please wait ..." : null}
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
+            Cancel
           </Button>
-        ) : (
-          <Button type="button" onClick={onGenerate} disabled={loading}>
-            {loading ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {loading ? "Generating…" : "Generate Questions"}
+          <Button type="button" variant="outline" onClick={onBack} disabled={loading}>
+            <ArrowLeft />
+            Back
           </Button>
-        )}
+          {interviewId ? (
+            <Button type="button" onClick={onStartInterview}>
+              Start Interview
+              <ArrowRight />
+            </Button>
+          ) : (
+            <Button type="button" onClick={onGenerate} disabled={loading}>
+              {loading ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              {loading ? "Generating…" : "Generate Questions"}
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -15,6 +15,9 @@ type SessionStatus = "loading" | "active" | "error"
 export interface ElevenLabsConnection {
     conversationToken: string
     dynamicVariables: Record<string, string>
+    // ISO 639-1 code (e.g. "bn") - sent as the session's overrides.agent.language
+    // so the agent speaks/listens in the candidate's chosen interview language.
+    language: string
 }
 
 function InterviewSession({ interviewId }: InterviewSessionProps) {
@@ -52,6 +55,7 @@ function InterviewSession({ interviewId }: InterviewSessionProps) {
                 setConnection({
                     conversationToken: data.connection.conversationToken,
                     dynamicVariables: data.connection.dynamicVariables,
+                    language: data.connection.language,
                 })
                 setStatus("active")
             } catch (e) {

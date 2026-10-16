@@ -11,7 +11,8 @@ export const SaveInterviewQuestions = mutation({
         jobDescription: v.optional(v.string()),
         mode: v.optional(v.string()),
         level: v.optional(v.string()),
-        qno: v.optional(v.number())
+        qno: v.optional(v.number()),
+        lang: v.optional(v.string())
     },
     handler: async (ctx, args) => {
         const result = await ctx.db.insert('InterviewSessionTable', {
@@ -23,6 +24,7 @@ export const SaveInterviewQuestions = mutation({
             mode: args.mode,
             level: args.level,
             qno: args.qno,
+            lang: args.lang,
             userId: args.uid,
             status: 'draft'
         });

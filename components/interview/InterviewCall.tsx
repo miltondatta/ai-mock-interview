@@ -90,6 +90,16 @@ function InterviewCall({ interviewId, connection }: InterviewCallProps) {
             conversation.startSession({
                 conversationToken: connection.conversationToken,
                 dynamicVariables: connection.dynamicVariables,
+                // No overrides.agent.language here: the ElevenLabs agent's Security
+                // settings have the "Language" override disabled
+                // (conversation_config_override.agent.language: false). Sending it
+                // anyway doesn't get silently ignored - ElevenLabs rejects the whole
+                // conversation_initiation_client_data payload and the session dies
+                // immediately with an empty error_event (websocket close code 1006).
+                // Language is instead handled entirely through the system prompt via
+                // the interview_language/first_message dynamic variables, which aren't
+                // Security-gated. Re-add this override only after enabling "Language"
+                // under the agent's Security > Overrides settings in the dashboard.
             })
             setHasJoined(true)
         } catch (e) {

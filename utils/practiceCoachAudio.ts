@@ -91,7 +91,13 @@ export interface QuestionTimelineEntry {
 function buildTtsRequestBody(text: string, ttsConfig: Record<string, unknown> | undefined) {
     return {
         text,
-        model_id: (ttsConfig?.model_id as string | undefined) ?? "eleven_multilingual_v2",
+        // Forced to eleven_v3 regardless of the agent's configured model_id:
+        // eleven_multilingual_v2 (the agent's dashboard default) only covers 29
+        // languages and does not include Bengali - it reads Bengali script as
+        // gibberish instead of erroring, which is why it went unnoticed. v3
+        // covers 70+ languages (Bengali included) and auto-detects the language
+        // from the text itself, so no language_code hint is needed here.
+        model_id: "eleven_v3",
         // Match the agent's own tuned voice settings instead of relying on
         // the API's bare defaults, which can come out muffled/inconsistent.
         voice_settings: {

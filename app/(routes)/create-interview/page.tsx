@@ -4,7 +4,7 @@ import React, { useContext, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import axios from "axios"
-import { useMutation, useQuery } from "convex/react"
+import { useQuery } from "convex/react"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { Id } from "@/convex/_generated/dataModel"
@@ -32,7 +32,7 @@ interface CreateInterviewWizardProps {
   initialLanguages: LanguageSelection
 }
 
-function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWizardProps) {
+function CreateInterviewWizard({ initialLanguages }: CreateInterviewWizardProps) {
   const router = useRouter()
   const [step, setStep] = useState<"form" | "review">("form")
   const [file, setFile] = useState<File | null>(null)
@@ -48,8 +48,6 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
   const [loading, setLoading] = useState(false)
   const [interviewId, setInterviewId] = useState<string | null>(null)
   const [formNotice, setFormNotice] = useState<{ type: "resume-missing" | "description-missing"; message: string } | null>(null)
-
-  const saveInterviewQuestion = useMutation(api.Interview.SaveInterviewQuestions)
 
   const onHandleInputChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -103,19 +101,7 @@ function CreateInterviewWizard({ userId, initialLanguages }: CreateInterviewWiza
 
     try {
       const res = await axios.post("/api/generate-interview-questions", formData_)
-
-      const resp = await saveInterviewQuestion({
-        questions: res.data?.questions,
-        resumeUrl: res.data?.resumeUrl ?? undefined,
-        resumeFileName: res.data?.resumeFileName ?? undefined,
-        jobTitle: formData.jobTitle || undefined,
-        jobDescription: formData.jobDescription || undefined,
-        mode: formData.mode || undefined,
-        level: formData.level || undefined,
-        qno: Number(formData.qno) || undefined,
-        uid: userId,
-      })
-      setInterviewId(resp)
+      setInterviewId(res.data?.interviewId ?? null)
     } catch (e) {
       if (axios.isAxiosError(e) && e.response?.status === 429) {
         alert(e.response.data?.result)

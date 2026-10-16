@@ -16,6 +16,10 @@ export default defineSchema({
       mode: v.optional(v.string()),
       level: v.optional(v.string()),
       qno: v.optional(v.number()),
+      // ISO 639-1 code (e.g. "bn") the candidate picked on the Language Settings
+      // step - carried through to the live ElevenLabs conversation so the agent
+      // speaks/listens in that language instead of always defaulting to English.
+      lang: v.optional(v.string()),
       userId: v.id('UserTable'),
       status: v.string(),
       elevenlabsConversationId: v.optional(v.string()),
