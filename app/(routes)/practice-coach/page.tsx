@@ -22,6 +22,7 @@ import {
   Briefcase,
   CheckCircle2,
   FileText,
+  Globe,
   Headphones,
   Play,
   Pause,
@@ -37,6 +38,7 @@ import Link from "next/link"
 import { Id } from "@/convex/_generated/dataModel"
 import { cn } from "@/lib/utils"
 import { PRACTICE_QUESTIONS, FREE_PLAN_MAX_QUESTIONS } from "./questions"
+import { DEFAULT_PRACTICE_COACH_LANGUAGE, LANGUAGE_OPTIONS } from "../settings/languages"
 
 // "Tell me about yourself" is pre-selected for every new session - it's the
 // de facto opener in almost any interview, so starting the candidate there
@@ -86,6 +88,9 @@ function PracticeCoach() {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [jobTitle, setJobTitle] = useState("")
   const [jobDescription, setJobDescription] = useState("")
+  // null until the candidate picks one here, so the dropdown follows the saved
+  // Practice Coach language from Settings once that query resolves.
+  const [languageOverride, setLanguageOverride] = useState<string | null>(null)
   const [selectedQuestions, setSelectedQuestions] = useState<string[]>(DEFAULT_SELECTED_QUESTIONS)
   const [upgradeNoticeOpen, setUpgradeNoticeOpen] = useState(false)
   const [questionsNoticeOpen, setQuestionsNoticeOpen] = useState(false)
@@ -113,6 +118,12 @@ function PracticeCoach() {
     userDetail?._id ? { userId: userDetail._id } : "skip"
   )
 
+  const settings = useQuery(
+    api.UserSettings.GetUserSettings,
+    userDetail?._id ? { userId: userDetail._id } : "skip"
+  )
+  const language = languageOverride ?? settings?.practiceCoachLanguage ?? DEFAULT_PRACTICE_COACH_LANGUAGE
+
   type PracticeCoachGeneration = NonNullable<typeof allGenerations>[number]
 
   // Setting audioUrl and requesting autoplay happen in separate state
@@ -136,6 +147,7 @@ function PracticeCoach() {
       formData.append("jobTitle", jobTitle)
       formData.append("jobDescription", jobDescription)
       formData.append("selectedQuestions", JSON.stringify(selectedQuestions))
+      formData.append("lang", language)
       const res = await fetch("/api/practice-coach/generate", {
         method: "POST",
         body: formData,
@@ -151,6 +163,7 @@ function PracticeCoach() {
         setJobTitle("")
         setJobDescription("")
         setSelectedQuestions(DEFAULT_SELECTED_QUESTIONS)
+        setLanguageOverride(null)
         setResumeUploadKey((key) => key + 1)
       }
     } catch (e) {
@@ -745,6 +758,24 @@ function PracticeCoach() {
               value={jobDescription}
               onChange={(e) => setJobDescription(e.target.value)}
             />
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+              <Globe className="size-4 text-primary" />
+              Language
+            </label>
+            <select
+              value={language}
+              onChange={(e) => setLanguageOverride(e.target.value)}
+              className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-64"
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.flag} {option.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="relative space-y-4 overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-4 shadow-sm shadow-primary/10 sm:p-5">

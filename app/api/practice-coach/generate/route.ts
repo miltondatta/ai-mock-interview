@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
     // before it's sent.
     const jobTitle = sanitizeFreeText((formData.get("jobTitle") as string | null) ?? "");
     const jobDescription = sanitizeFreeText((formData.get("jobDescription") as string | null) ?? "");
+    const lang = (formData.get("lang") as string | null) || "en";
     const selectedQuestionsRaw = (formData.get("selectedQuestions") as string | null) ?? "[]";
     let selectedQuestions: string[] = [];
     try {
@@ -89,6 +90,7 @@ export async function POST(req: NextRequest) {
                 job_title: jobTitle,
                 job_description: jobDescription,
                 practice_questions: practiceQuestions,
+                lang,
             },
             { timeout: 280000 }
         );
