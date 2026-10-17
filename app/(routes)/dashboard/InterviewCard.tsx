@@ -13,16 +13,33 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Briefcase, CheckCircle2, Gauge, Hash, ListChecks, Loader2Icon, Trash2 } from 'lucide-react'
+import { ArrowRight, Briefcase, CalendarClock, CheckCircle2, Gauge, Hash, ListChecks, Loader2Icon, Trash2 } from 'lucide-react'
 import React, { useContext, useState } from 'react'
 import { Doc } from '@/convex/_generated/dataModel'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import { UserDetailContext } from '@/context/UserDetailContext'
 import { INTERVIEW_MODES } from '../_components/InterviewOptions'
+import { DEFAULT_INTERVIEW_LANGUAGE, LANGUAGE_OPTIONS } from '../settings/languages'
 
 function getModeLabel(mode?: string) {
   return INTERVIEW_MODES.find((option) => option.value === mode)?.label;
+}
+
+// Short badge text, e.g. "🇧🇩 Bangla" - drops the native-script suffix from the
+// settings label to keep the card header compact.
+function getLanguageLabel(lang?: string) {
+  const code = (lang || DEFAULT_INTERVIEW_LANGUAGE).toLowerCase().split(/[-_]/)[0];
+  const option = LANGUAGE_OPTIONS.find((o) => o.value === code);
+  if (!option) return code.toUpperCase();
+  return `${option.flag} ${option.label.replace(/\s*\(.*\)$/, '')}`;
+}
+
+function formatCreatedAt(timestamp: number) {
+  return new Date(timestamp).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
 }
 
 function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> }) {
@@ -33,6 +50,7 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const isCompleted = interview.status === 'completed';
   const modeLabel = getModeLabel(interview.mode);
+  const languageLabel = getLanguageLabel(interview.lang);
 
   const onStartInterview = () => {
     router.push(`/interview/${interview._id}/start`);
@@ -58,6 +76,7 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
           <Briefcase className='size-5' />
         </div>
         <div className='flex items-center gap-2'>
+          <Badge variant='outline' title='Interview language'>{languageLabel}</Badge>
           <Badge variant={isCompleted ? 'success' : 'secondary'}>
             {isCompleted && <CheckCircle2 className='size-3' />}
             {isCompleted ? 'Complete' : 'Draft'}
@@ -88,6 +107,10 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
       </div>
       <div>
         <h3 className='font-semibold text-base leading-snug'>{interview.jobTitle || 'Resume-based Interview'}</h3>
+        <p className='mt-1 flex items-center gap-1 text-xs text-muted-foreground'>
+          <CalendarClock className='size-3.5 text-primary' />
+          Created: <span className='font-medium text-foreground'>{formatCreatedAt(interview._creationTime)}</span>
+        </p>
         {(modeLabel || interview.level || interview.qno) && (
           <div className='mt-2.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground'>
             {modeLabel && (

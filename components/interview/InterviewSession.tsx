@@ -18,6 +18,9 @@ export interface ElevenLabsConnection {
     // ISO 639-1 code (e.g. "bn") - sent as the session's overrides.agent.language
     // so the agent speaks/listens in the candidate's chosen interview language.
     language: string
+    // Already-localized, already-interpolated greeting for `language` - sent as
+    // the session's overrides.agent.firstMessage.
+    firstMessage: string
 }
 
 function InterviewSession({ interviewId }: InterviewSessionProps) {
@@ -56,6 +59,7 @@ function InterviewSession({ interviewId }: InterviewSessionProps) {
                     conversationToken: data.connection.conversationToken,
                     dynamicVariables: data.connection.dynamicVariables,
                     language: data.connection.language,
+                    firstMessage: data.connection.firstMessage,
                 })
                 setStatus("active")
             } catch (e) {

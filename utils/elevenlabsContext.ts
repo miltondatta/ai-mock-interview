@@ -21,7 +21,7 @@ const FIRST_MESSAGE_TEMPLATES: Record<string, (name: string, role: string) => st
     en: (name, role) =>
         `Hi ${name}, thanks for joining. I'll be conducting your interview session today for ${role} - take your time with each answer, and let me know if you'd like anything repeated. Let's get started. Answer rules: Say Pass if you want to pass any question, and Say Done if you finish the answer. First, introduce yourself.`,
     bn: (name, role) =>
-        `হ্যালো ${name}, যোগ দেওয়ার জন্য ধন্যবাদ। আজ আমি আপনার ${role} পদের জন্য ইন্টারভিউ সেশন পরিচালনা করব - প্রতিটি উত্তর দেওয়ার জন্য আপনার সময় নিন, এবং কিছু পুনরাবৃত্তি করতে চাইলে আমাকে জানান। চলুন শুরু করি। উত্তর দেওয়ার নিয়ম: কোনো প্রশ্ন এড়িয়ে যেতে চাইলে Pass বলুন, আর উত্তর শেষ হলে Done বলুন। প্রথমে নিজের সম্পর্কে একটু পরিচয় দিন।`,
+        `হ্যালো ${name}, যোগ দেওয়ার জন্য ধন্যবাদ। আজ ${role} পদের জন্য আপনার সাক্ষাৎকারটি আমি নেব। প্রতিটি প্রশ্নের উত্তর দেওয়ার জন্য আপনি যথেষ্ট সময় নিতে পারেন; কোনো প্রশ্ন পুনরায় শোনার প্রয়োজন হলে আমাকে জানাবেন। তাহলে শুরু করা যাক। উত্তর দেওয়ার নিয়ম: কোনো প্রশ্ন এড়িয়ে যেতে চাইলে 'Pass' বলুন এবং উত্তর দেওয়া শেষ হলে 'Done' বলুন। প্রথমেই, নিজের সম্পর্কে কিছু বলুন।`,
     hi: (name, role) =>
         `नमस्ते ${name}, जुड़ने के लिए धन्यवाद। आज मैं आपका ${role} पद के लिए इंटरव्यू सेशन लूंगा - हर जवाब के लिए अपना समय लें, और अगर कुछ दोहराना चाहें तो मुझे बताएं। चलिए शुरू करते हैं। जवाब देने के नियम: अगर किसी सवाल को छोड़ना चाहें तो Pass बोलें, और जवाब पूरा होने पर Done बोलें। सबसे पहले, अपना परिचय दें।`,
     es: (name, role) =>
@@ -38,7 +38,7 @@ const FIRST_MESSAGE_TEMPLATES: Record<string, (name: string, role: string) => st
 
 const ROLE_FALLBACK: Record<string, string> = {
     en: "this position",
-    bn: "এই পদের",
+    bn: "এই",
     hi: "इस पद",
     es: "este puesto",
     fr: "ce poste",
@@ -47,7 +47,16 @@ const ROLE_FALLBACK: Record<string, string> = {
     zh: "这个职位",
 };
 
-function buildInterviewFirstMessage(candidateName: string, jobTitle: string | undefined, language: string): string {
+// Normalizes a stored/selected language code (e.g. "bn-BD", "EN_us") down to a
+// base ISO 639-1 code that has a first-message template, falling back to English
+// for missing/unsupported values. To support another language, add it to both
+// FIRST_MESSAGE_TEMPLATES and ROLE_FALLBACK above.
+export function resolveInterviewLanguage(language: string | null | undefined): string {
+    const base = (language ?? "").trim().toLowerCase().split(/[-_]/)[0];
+    return base && base in FIRST_MESSAGE_TEMPLATES ? base : "en";
+}
+
+export function buildInterviewFirstMessage(candidateName: string, jobTitle: string | undefined, language: string): string {
     const template = FIRST_MESSAGE_TEMPLATES[language] ?? FIRST_MESSAGE_TEMPLATES.en;
     const role = jobTitle?.trim() || ROLE_FALLBACK[language] || ROLE_FALLBACK.en;
     return template(candidateName, role);
@@ -68,7 +77,7 @@ export function buildInterviewDynamicVariables(params: {
     const questionList = params.questions
         .map((qa, index) => `${index + 1}. ${qa.question}`)
         .join("\n");
-    const language = params.language ?? "en";
+    const language = resolveInterviewLanguage(params.language);
 
     return {
         candidate_name: params.candidateName,

@@ -6,7 +6,7 @@ import { Id } from "@/convex/_generated/dataModel";
 // Tavus agent call paused below - import kept commented alongside it, not removed.
 // import { buildTavusConversationalContext } from "@/utils/tavusContext";
 import { InterviewQA } from "@/utils/knowledgeBase";
-import { buildInterviewDynamicVariables } from "@/utils/elevenlabsContext";
+import { buildInterviewDynamicVariables, resolveInterviewLanguage } from "@/utils/elevenlabsContext";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -158,7 +158,9 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    const language = interview.lang || "en";
+    // The interview's own language (not the feedback/Practice Coach setting),
+    // normalized so regional variants like "bn-BD" resolve to "bn".
+    const language = resolveInterviewLanguage(interview.lang);
 
     const dynamicVariables = buildInterviewDynamicVariables({
         candidateName: convexUser.name || "Candidate",
@@ -205,7 +207,12 @@ export async function POST(req: NextRequest) {
         });
 
         return NextResponse.json({
-            connection: { conversationToken, dynamicVariables, language },
+            connection: {
+                conversationToken,
+                dynamicVariables,
+                language,
+                firstMessage: dynamicVariables.first_message,
+            },
         });
     } catch (e) {
         console.error("Failed to start ElevenLabs conversation:", e);
