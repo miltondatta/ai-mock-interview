@@ -4,6 +4,9 @@ import React, { useState } from "react"
 import { Search, User, Settings as SettingsIcon, Globe, SlidersHorizontal, Mic, Bell } from "lucide-react"
 import { cn } from "@/lib/utils"
 import LanguageSettings from "./LanguageSettings"
+import ProfileSettings from "./ProfileSettings"
+import AccountSettings from "./AccountSettings"
+import InterviewPreferences from "./InterviewPreferences"
 import ComingSoonPanel from "./ComingSoonPanel"
 
 const SETTINGS_TABS = [
@@ -72,6 +75,12 @@ function SettingsPage() {
         <div className="overflow-hidden rounded-xl border border-border bg-card">
           {activeTab === "language" ? (
             <LanguageSettings />
+          ) : activeTab === "profile" ? (
+            <ProfileSettings />
+          ) : activeTab === "account" ? (
+            <AccountSettings />
+          ) : activeTab === "interview-preferences" ? (
+            <InterviewPreferences />
           ) : (
             (() => {
               const tab = SETTINGS_TABS.find((t) => t.id === activeTab)!

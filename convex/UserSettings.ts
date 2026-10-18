@@ -12,6 +12,32 @@ export const GetUserSettings = query({
     }
 });
 
+// Upserts the caller's default interview mode/level/question count. Patches
+// only these fields so the language preferences on the same row are kept.
+export const SaveInterviewPreferences = mutation({
+    args: {
+        userId: v.id('UserTable'),
+        defaultInterviewMode: v.string(),
+        defaultInterviewLevel: v.string(),
+        defaultQuestionCount: v.string(),
+    },
+    handler: async (ctx, args) => {
+        const existing = await ctx.db.query('UserSettingsTable').filter(q => q.eq(q.field('userId'), args.userId)).collect();
+        const patch = {
+            userId: args.userId,
+            defaultInterviewMode: args.defaultInterviewMode,
+            defaultInterviewLevel: args.defaultInterviewLevel,
+            defaultQuestionCount: args.defaultQuestionCount,
+            updatedAt: Date.now(),
+        };
+        if (existing.length > 0) {
+            await ctx.db.patch(existing[0]._id, patch);
+            return existing[0]._id;
+        }
+        return await ctx.db.insert('UserSettingsTable', patch);
+    }
+});
+
 // Upserts the caller's language preferences.
 export const SaveUserSettings = mutation({
     args: {

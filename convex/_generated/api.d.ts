@@ -10,6 +10,7 @@
 
 import type * as Interview from "../Interview.js";
 import type * as PracticeCoach from "../PracticeCoach.js";
+import type * as UserProfile from "../UserProfile.js";
 import type * as UserSettings from "../UserSettings.js";
 import type * as admin from "../admin.js";
 import type * as rateLimit from "../rateLimit.js";
@@ -24,6 +25,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   Interview: typeof Interview;
   PracticeCoach: typeof PracticeCoach;
+  UserProfile: typeof UserProfile;
   UserSettings: typeof UserSettings;
   admin: typeof admin;
   rateLimit: typeof rateLimit;

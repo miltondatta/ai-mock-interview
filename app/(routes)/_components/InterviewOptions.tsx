@@ -20,6 +20,12 @@ export const INTERVIEW_MODES = [
   { value: 'rapid-fire', label: 'Rapid Fire' },
 ]
 
+// Used by Create Interview when the candidate hasn't saved their own
+// defaults under Settings > Interview Preferences.
+export const DEFAULT_INTERVIEW_MODE = 'technical'
+export const DEFAULT_INTERVIEW_LEVEL = 'basic'
+export const DEFAULT_QUESTION_COUNT = '2'
+
 const LEVELS = [
   { value: 'basic', label: 'Basic' },
   { value: 'medium', label: 'Medium' },

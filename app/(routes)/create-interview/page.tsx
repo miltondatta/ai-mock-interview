@@ -26,13 +26,19 @@ import {
   DEFAULT_FEEDBACK_LANGUAGE,
   DEFAULT_PRACTICE_COACH_LANGUAGE,
 } from "../settings/languages"
+import {
+  DEFAULT_INTERVIEW_MODE,
+  DEFAULT_INTERVIEW_LEVEL,
+  DEFAULT_QUESTION_COUNT,
+} from "../_components/InterviewOptions"
 
 interface CreateInterviewWizardProps {
   userId: Id<"UserTable">
   initialLanguages: LanguageSelection
+  initialPreferences: Pick<CreateInterviewFormData, "mode" | "level" | "qno">
 }
 
-function CreateInterviewWizard({ initialLanguages }: CreateInterviewWizardProps) {
+function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateInterviewWizardProps) {
   const router = useRouter()
   const [step, setStep] = useState<"form" | "review">("form")
   const [file, setFile] = useState<File | null>(null)
@@ -40,9 +46,7 @@ function CreateInterviewWizard({ initialLanguages }: CreateInterviewWizardProps)
     jobTitle: "",
     companyName: "",
     jobDescription: "",
-    mode: "technical",
-    level: "basic",
-    qno: "2",
+    ...initialPreferences,
   })
   const [languages, setLanguages] = useState<LanguageSelection>(initialLanguages)
   const [loading, setLoading] = useState(false)
@@ -224,6 +228,11 @@ function CreateInterviewPage() {
         interviewLanguage: settings?.interviewLanguage ?? DEFAULT_INTERVIEW_LANGUAGE,
         feedbackLanguage: settings?.feedbackLanguage ?? DEFAULT_FEEDBACK_LANGUAGE,
         practiceCoachLanguage: settings?.practiceCoachLanguage ?? DEFAULT_PRACTICE_COACH_LANGUAGE,
+      }}
+      initialPreferences={{
+        mode: settings?.defaultInterviewMode ?? DEFAULT_INTERVIEW_MODE,
+        level: settings?.defaultInterviewLevel ?? DEFAULT_INTERVIEW_LEVEL,
+        qno: settings?.defaultQuestionCount ?? DEFAULT_QUESTION_COUNT,
       }}
     />
   )

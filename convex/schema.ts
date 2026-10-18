@@ -70,6 +70,23 @@ export default defineSchema({
       interviewLanguage: v.optional(v.string()),
       feedbackLanguage: v.optional(v.string()),
       practiceCoachLanguage: v.optional(v.string()),
+      // Settings > Interview Preferences - pre-selected on Create Interview.
+      defaultInterviewMode: v.optional(v.string()),
+      defaultInterviewLevel: v.optional(v.string()),
+      defaultQuestionCount: v.optional(v.string()),
+      updatedAt: v.number(),
+    }),
+
+    // Settings > Profile: professional details beyond the name/email/avatar
+    // that Clerk owns. One row per user.
+    UserProfileTable: defineTable({
+      userId: v.id('UserTable'),
+      phone: v.optional(v.string()),
+      headline: v.optional(v.string()),
+      location: v.optional(v.string()),
+      experienceLevel: v.optional(v.string()),
+      linkedinUrl: v.optional(v.string()),
+      bio: v.optional(v.string()),
       updatedAt: v.number(),
     }),
 
