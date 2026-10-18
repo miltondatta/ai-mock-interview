@@ -37,15 +37,21 @@ export async function POST(req: NextRequest) {
     }
 
     const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    if (!file || file.size === 0) {
-        return NextResponse.json({ error: "Please upload your resume first." }, { status: 400 });
-    }
+    const rawFile = formData.get("file");
+    const file = rawFile instanceof File && rawFile.size > 0 ? rawFile : null;
     // Pasted job posts drag along bullet glyphs, smart quotes/dashes, and
     // inconsistent line endings that can confuse the n8n prompt - normalize
     // before it's sent.
     const jobTitle = sanitizeFreeText((formData.get("jobTitle") as string | null) ?? "");
     const jobDescription = sanitizeFreeText((formData.get("jobDescription") as string | null) ?? "");
+    // Either a resume, or a job title + description on their own, is enough to
+    // generate a script.
+    if (!file && (!jobTitle || !jobDescription)) {
+        return NextResponse.json(
+            { error: "Please upload your resume or add a job title and job description." },
+            { status: 400 }
+        );
+    }
     const lang = (formData.get("lang") as string | null) || "en";
     const selectedQuestionsRaw = (formData.get("selectedQuestions") as string | null) ?? "[]";
     let selectedQuestions: string[] = [];
@@ -63,15 +69,18 @@ export async function POST(req: NextRequest) {
             urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT as string,
         });
 
-        const bytes = await file.arrayBuffer();
-        const buffer = Buffer.from(bytes);
+        let resumeUrl: string | undefined;
+        if (file) {
+            const bytes = await file.arrayBuffer();
+            const buffer = Buffer.from(bytes);
 
-        const uploadedFile = await imagekit.upload({
-            file: buffer,
-            fileName: Date.now().toString() + ".pdf",
-            isPublished: true,
-        });
-        const resumeUrl = uploadedFile?.url;
+            const uploadedFile = await imagekit.upload({
+                file: buffer,
+                fileName: Date.now().toString() + ".pdf",
+                isPublished: true,
+            });
+            resumeUrl = uploadedFile?.url;
+        }
 
         // N8N expects practice_questions as an object keyed "1", "2", ... rather
         // than an array, and the count varies with how many the user picked.
@@ -86,11 +95,13 @@ export async function POST(req: NextRequest) {
         const webhookRes = await axios.post(
             "https://n8n.vistechsolutions.online/webhook/practice_coach",
             {
-                resumeUrl,
+                // Omitted entirely (not sent as empty) for job-description-only requests.
+                ...(resumeUrl ? { resumeUrl } : {}),
                 job_title: jobTitle,
                 job_description: jobDescription,
                 practice_questions: practiceQuestions,
                 lang,
+                interviewType: "",
             },
             { timeout: 280000 }
         );
@@ -113,6 +124,7 @@ export async function POST(req: NextRequest) {
                         narrationText,
                         segments,
                         candidateName: convexUser.name || "Candidate",
+                        language: lang,
                     });
                     const uploadedAudio = await imagekit.upload({
                         file: audio,
@@ -137,6 +149,7 @@ export async function POST(req: NextRequest) {
             jobTitle,
             jobDescription,
             selectedQuestions,
+            lang,
             questionTimeline,
             webhookResponse: webhookRes.data,
             audioUrl,

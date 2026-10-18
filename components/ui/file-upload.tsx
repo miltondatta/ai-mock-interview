@@ -2,15 +2,18 @@
 import { cn } from "@/lib/utils";
 import React, { useRef, useState } from "react";
 import { motion } from "motion/react";
-import { UploadCloud, FileText } from "lucide-react";
+import { UploadCloud, FileText, X } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 
 export const FileUpload = ({
   onChange,
   initialFiles,
+  onRemove,
 }: {
   onChange?: (files: File[]) => void;
   initialFiles?: File[];
+  // When provided, each uploaded file gets a remove button.
+  onRemove?: (file: File) => void;
 }) => {
   const [files, setFiles] = useState<File[]>(initialFiles ?? []);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -18,6 +21,14 @@ export const FileUpload = ({
   const handleFileChange = (newFiles: File[]) => {
     setFiles((prevFiles) => [...prevFiles, ...newFiles]);
     onChange && onChange(newFiles);
+  };
+
+  const handleRemove = (index: number) => {
+    const removed = files[index];
+    setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
+    // Clear the input so picking the same file again still fires onChange.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    onRemove && removed && onRemove(removed);
   };
 
   const handleClick = () => {
@@ -88,6 +99,17 @@ export const FileUpload = ({
                     {(file.size / (1024 * 1024)).toFixed(2)} MB
                   </p>
                 </div>
+                {onRemove && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(idx)}
+                    aria-label={`Remove ${file.name}`}
+                    title="Remove"
+                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
               </motion.div>
             ))}
           </div>

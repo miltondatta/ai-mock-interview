@@ -15,7 +15,7 @@ const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Backfills audio for a Practice Coach script that was saved before audio
 // generation existed (or whose audio generation failed the first time), so
 // the candidate can still play it without generating a brand new script.
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
     const user = await currentUser();
@@ -78,6 +78,7 @@ export async function POST(req: NextRequest) {
             narrationText,
             segments,
             candidateName: convexUser.name || "Candidate",
+            language: generation.lang,
         });
 
         const imagekit = new ImageKit({

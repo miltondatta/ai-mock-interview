@@ -81,6 +81,9 @@ export default defineSchema({
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
       selectedQuestions: v.optional(v.array(v.string())),
+      // Practice Coach language the script was generated in, e.g. "bn" - also
+      // picks the narrated greeting's language when audio is (re)generated.
+      lang: v.optional(v.string()),
       // Per-question narration start times (seconds into audioUrl), used to
       // show only the question currently being read during playback.
       questionTimeline: v.optional(

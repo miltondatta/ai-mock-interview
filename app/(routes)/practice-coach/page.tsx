@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   Briefcase,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   Globe,
   Headphones,
@@ -45,6 +47,8 @@ import { DEFAULT_PRACTICE_COACH_LANGUAGE, LANGUAGE_OPTIONS } from "../settings/l
 // instead of an empty list.
 const DEFAULT_SELECTED_QUESTIONS = [PRACTICE_QUESTIONS[0]]
 
+const SESSIONS_PER_PAGE = 4
+
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00"
   const mins = Math.floor(seconds / 60)
@@ -61,7 +65,15 @@ function relativeTime(timestamp: number) {
   return `${Math.round(diffHours / 24)}d ago`
 }
 
-const WAVE_BAR_HEIGHTS = [8, 14, 10, 18, 11, 16, 9]
+// e.g. "Oct 18, 2026, 3:45 PM" in the viewer's own locale and time zone.
+function formatCreatedAt(timestamp: number) {
+  return new Date(timestamp).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  })
+}
+
+const WAVE_BAR_HEIGHTS =[8, 14, 10, 18, 11, 16, 9]
 
 function Waveform({ active }: { active: boolean }) {
   return (
@@ -110,6 +122,11 @@ function PracticeCoach() {
   const [generatingAudioId, setGeneratingAudioId] = useState<Id<"PracticeCoachTable"> | null>(null)
   const [resumeUploadKey, setResumeUploadKey] = useState(0)
   const [formNotice, setFormNotice] = useState<{ type: "required" | "advisory"; message: string } | null>(null)
+  const [sessionsPage, setSessionsPage] = useState(1)
+  const questionsSectionRef = useRef<HTMLDivElement>(null)
+  // Only auto-advance once per form fill, so going back to tweak a field
+  // doesn't keep yanking the candidate down to the questions.
+  const hasAdvancedToQuestionsRef = useRef(false)
 
   // Every Practice Coach generation for this user, newest first - rendered as
   // a single playlist, each row playable and deletable on its own.
@@ -123,6 +140,15 @@ function PracticeCoach() {
     userDetail?._id ? { userId: userDetail._id } : "skip"
   )
   const language = languageOverride ?? settings?.practiceCoachLanguage ?? DEFAULT_PRACTICE_COACH_LANGUAGE
+
+  // Clamped against the live page count so deleting the last row on the
+  // final page falls back to the previous page instead of showing nothing.
+  const totalSessionPages = Math.max(1, Math.ceil((allGenerations?.length ?? 0) / SESSIONS_PER_PAGE))
+  const currentSessionsPage = Math.min(sessionsPage, totalSessionPages)
+  const pagedGenerations = (allGenerations ?? []).slice(
+    (currentSessionsPage - 1) * SESSIONS_PER_PAGE,
+    currentSessionsPage * SESSIONS_PER_PAGE
+  )
 
   type PracticeCoachGeneration = NonNullable<typeof allGenerations>[number]
 
@@ -138,12 +164,16 @@ function PracticeCoach() {
     setAutoplayRequested(false)
   }, [audioUrl, autoplayRequested])
 
+  // A resume alone, or a job title + description without a resume, is enough
+  // to generate a script.
+  const canGenerate = !!resumeFile || (!!jobTitle.trim() && !!jobDescription.trim())
+
   const runGeneration = async () => {
-    if (!resumeFile || generating) return
+    if (!canGenerate || generating) return
     setGenerating(true)
     try {
       const formData = new FormData()
-      formData.append("file", resumeFile)
+      if (resumeFile) formData.append("file", resumeFile)
       formData.append("jobTitle", jobTitle)
       formData.append("jobDescription", jobDescription)
       formData.append("selectedQuestions", JSON.stringify(selectedQuestions))
@@ -157,6 +187,8 @@ function PracticeCoach() {
         console.error("Failed to generate practice video:", data?.error)
       } else {
         setAudioUrl(data?.audioUrl ?? null)
+        // The new session lands at the top of the newest-first list.
+        setSessionsPage(1)
         // Clear the form so the candidate starts the next session fresh -
         // this also re-disables Generate Scripts until a resume is chosen again.
         setResumeFile(null)
@@ -165,6 +197,7 @@ function PracticeCoach() {
         setSelectedQuestions(DEFAULT_SELECTED_QUESTIONS)
         setLanguageOverride(null)
         setResumeUploadKey((key) => key + 1)
+        hasAdvancedToQuestionsRef.current = false
       }
     } catch (e) {
       console.error("Failed to generate practice video:", e)
@@ -187,6 +220,18 @@ function PracticeCoach() {
       return
     }
     setResumeFile(file)
+    advanceToQuestionsIfComplete(true)
+  }
+
+  // Once the resume, job title and job description are all in, bring the
+  // candidate straight to the Practice Questions as the next step.
+  const advanceToQuestionsIfComplete = (hasResume = !!resumeFile) => {
+    if (hasAdvancedToQuestionsRef.current) return
+    if (!hasResume || !jobTitle.trim() || !jobDescription.trim()) return
+    hasAdvancedToQuestionsRef.current = true
+    const section = questionsSectionRef.current
+    section?.scrollIntoView({ behavior: "smooth", block: "start" })
+    section?.focus({ preventScroll: true })
   }
 
   // Multi-select, capped at FREE_PLAN_MAX_QUESTIONS until real plan-based
@@ -205,7 +250,7 @@ function PracticeCoach() {
   }
 
   const onGenerateVideo = () => {
-    if (!resumeFile || generating) return
+    if (!canGenerate || generating) return
 
     const trimmedTitle = jobTitle.trim()
     const trimmedDescription = jobDescription.trim()
@@ -357,7 +402,7 @@ function PracticeCoach() {
   }
 
   return (
-    <div className="relative mx-auto max-w-5xl overflow-hidden px-6 py-10 md:px-10 md:py-14">
+    <div className="relative mx-auto max-w-7xl overflow-hidden px-6 py-10 md:px-10 md:py-14">
       <div className="pointer-events-none absolute -top-24 left-1/4 -z-10 size-80 rounded-full bg-primary/15 blur-3xl" />
       <div className="pointer-events-none absolute -top-10 right-0 -z-10 size-72 rounded-full bg-primary/10 blur-3xl" />
 
@@ -378,163 +423,432 @@ function PracticeCoach() {
         </div>
       </motion.div>
 
-      {/* Playlist */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.1 }}
-        className="relative mt-8 overflow-hidden rounded-3xl border border-border bg-card p-6 shadow-sm md:p-8"
-      >
-        <div className="pointer-events-none absolute -right-10 -top-10 size-48 rounded-full bg-primary/10 blur-2xl" />
-
-        {allGenerations && allGenerations.length > 0 ? (
-          <div className="relative z-10 flex flex-col divide-y divide-border">
-            {allGenerations.map((generation) => {
-              const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
-              const isRowGeneratingAudio = generatingAudioId === generation._id
-              // Only the question whose narration has started by the current
-              // playback position - timeline entries are already in the
-              // order they're read, so the last one at or before now is active.
-              const activeQuestion = isRowLoaded
-                ? generation.questionTimeline?.reduce<string | null>(
-                    (active, entry) => (entry.startTime <= currentTime ? entry.question : active),
-                    null
-                  ) ?? null
-                : null
-              return (
-                <div key={generation._id} className="flex flex-col gap-6 py-6 first:pt-0 last:pb-0">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-4">
-                      <button
-                        type="button"
-                        onClick={() => onPlayerButtonClick(generation)}
-                        disabled={isRowGeneratingAudio}
-                        className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 transition-transform hover:scale-105 disabled:pointer-events-none disabled:opacity-60"
-                      >
-                        {isRowGeneratingAudio ? (
-                          <Loader2 className="size-6 animate-spin" />
-                        ) : isRowLoaded && isPlaying ? (
-                          <Pause className="size-6" />
-                        ) : (
-                          <Play className="size-6" />
-                        )}
-                      </button>
-                      <div>
-                        <p className="font-semibold text-foreground">
-                          {generation.jobTitle || "Practice script"}
-                        </p>
-                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Clock className="size-3" />
-                          {isRowGeneratingAudio ? "Generating audio…" : relativeTime(generation.createdAt)}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Waveform active={isRowLoaded && isPlaying} />
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        onClick={() => {
-                          setDeleteError(null)
-                          setSessionToDelete(generation._id)
-                        }}
-                        disabled={isRowLoaded && isPlaying}
-                        aria-label="Delete session"
-                        className="shrink-0 text-muted-foreground"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </div>
-
-                  {audioErrorRowId === generation._id && audioError && (
-                    <p className="text-sm text-destructive">{audioError}</p>
-                  )}
-
-                  {isRowLoaded && (
-                    <AnimatePresence mode="wait">
-                      {activeQuestion && (
-                        <motion.div
-                          key={activeQuestion}
-                          initial={{ opacity: 0, y: 6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -6 }}
-                          transition={{ duration: 0.25 }}
-                          className="rounded-xl border border-primary/30 bg-primary/5 p-3.5"
-                        >
-                          <p className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-primary uppercase">
-                            <ListChecks className="size-3.5" />
-                            Now practicing
-                          </p>
-                          <p className="mt-1 text-sm font-medium leading-snug text-foreground">
-                            {activeQuestion}
-                          </p>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  )}
-
-                  {isRowLoaded && (
-                    <div className="flex items-center gap-3">
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        onClick={onRestart}
-                        aria-label="Restart"
-                        className="shrink-0 text-muted-foreground"
-                      >
-                        <RotateCcw />
-                      </Button>
-                      <span className="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-                        {formatTime(currentTime)}
-                      </span>
-                      <input
-                        type="range"
-                        min={0}
-                        max={duration || 0}
-                        step={0.1}
-                        value={currentTime}
-                        onChange={(e) => onSeek(Number(e.target.value))}
-                        className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
-                      />
-                      <span className="w-9 shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {formatTime(duration)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div className="relative z-10 flex flex-col items-center gap-3 py-6 text-center">
-            <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Headphones className="size-6" />
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+        {/* Generation form */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.2 }}
+          className="rounded-3xl border border-border bg-card p-5 shadow-sm md:p-6"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Sparkles className="size-4" />
             </div>
             <div>
-              <p className="font-medium text-foreground">No practice sessions yet</p>
-              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                Upload your resume below to generate your first personalized practice script and audio.
+              <h2 className="font-semibold text-foreground">Create a new practice session</h2>
+              <p className="text-sm text-muted-foreground">
+                Upload your resume and the role details — we&apos;ll generate a tailored script and audio.
               </p>
             </div>
           </div>
-        )}
 
-        <audio
-          ref={audioRef}
-          src={audioUrl ?? undefined}
-          preload="metadata"
-          className="hidden"
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          onEnded={(e) => {
-            setIsPlaying(false)
-            e.currentTarget.currentTime = 0
-            setCurrentTime(0)
-          }}
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-        />
+          <div className="mt-4 space-y-4">
+            <div className="space-y-2">
+              <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                <FileText className="size-4 text-primary" />
+                Upload Resume
+              </label>
+              <FileUpload
+                key={resumeUploadKey}
+                onChange={onResumeFileChange}
+                onRemove={() => setResumeFile(null)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+              <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+                <Briefcase className="size-4 text-primary" />
+                Job Title
+              </label>
+              <Input
+                placeholder="Ex. Full Stack React Developer"
+                className="flex-1"
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                onBlur={() => advanceToQuestionsIfComplete()}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
+              <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+                <FileText className="size-4 text-primary" />
+                Job Description
+              </label>
+              <Textarea
+                placeholder="Enter or Paste Job Description"
+                className="h-[110px] flex-1"
+                value={jobDescription}
+                onChange={(e) => setJobDescription(e.target.value)}
+                onBlur={() => advanceToQuestionsIfComplete()}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+              <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
+                <Globe className="size-4 text-primary" />
+                Language
+              </label>
+              <select
+                value={language}
+                onChange={(e) => {
+                  setLanguageOverride(e.target.value)
+                  advanceToQuestionsIfComplete()
+                }}
+                className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-64"
+              >
+                {LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.flag} {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Playlist */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+          className="relative overflow-hidden rounded-3xl border border-border bg-card p-6 shadow-sm md:p-8"
+        >
+          <div className="pointer-events-none absolute -right-10 -top-10 size-48 rounded-full bg-primary/10 blur-2xl" />
+
+          {allGenerations && allGenerations.length > 0 ? (
+            <div className="relative z-10 flex flex-col divide-y divide-border">
+              {pagedGenerations.map((generation) => {
+                const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
+                const isRowGeneratingAudio = generatingAudioId === generation._id
+                const generationLanguage = LANGUAGE_OPTIONS.find((option) => option.value === generation.lang)
+                // Only the question whose narration has started by the current
+                // playback position - timeline entries are already in the
+                // order they're read, so the last one at or before now is active.
+                const activeQuestion = isRowLoaded
+                  ? generation.questionTimeline?.reduce<string | null>(
+                      (active, entry) => (entry.startTime <= currentTime ? entry.question : active),
+                      null
+                    ) ?? null
+                  : null
+                return (
+                  <div key={generation._id} className="flex flex-col gap-6 py-6 first:pt-0 last:pb-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex min-w-0 flex-1 items-center gap-4">
+                        <button
+                          type="button"
+                          onClick={() => onPlayerButtonClick(generation)}
+                          disabled={isRowGeneratingAudio}
+                          className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 transition-transform hover:scale-105 disabled:pointer-events-none disabled:opacity-60"
+                        >
+                          {isRowGeneratingAudio ? (
+                            <Loader2 className="size-6 animate-spin" />
+                          ) : isRowLoaded && isPlaying ? (
+                            <Pause className="size-6" />
+                          ) : (
+                            <Play className="size-6" />
+                          )}
+                        </button>
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-foreground">
+                            {generation.jobTitle || "Practice script"}
+                          </p>
+                          <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Clock className="size-3 shrink-0" />
+                            <span className="truncate">
+                              {isRowGeneratingAudio
+                                ? "Generating audio…"
+                                : `${formatCreatedAt(generation.createdAt)} · ${relativeTime(generation.createdAt)}`}
+                            </span>
+                          </div>
+                          {/* Sessions generated before lang was stored have none to show. */}
+                          {generationLanguage && (
+                            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                              {generationLanguage.flag} {generationLanguage.label}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <Waveform active={isRowLoaded && isPlaying} />
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setDeleteError(null)
+                            setSessionToDelete(generation._id)
+                          }}
+                          disabled={isRowLoaded && isPlaying}
+                          aria-label="Delete session"
+                          className="shrink-0 text-muted-foreground"
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {audioErrorRowId === generation._id && audioError && (
+                      <p className="text-sm text-destructive">{audioError}</p>
+                    )}
+
+                    {isRowLoaded && (
+                      <AnimatePresence mode="wait">
+                        {activeQuestion && (
+                          <motion.div
+                            key={activeQuestion}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -6 }}
+                            transition={{ duration: 0.25 }}
+                            className="rounded-xl border border-primary/30 bg-primary/5 p-3.5"
+                          >
+                            <p className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-primary uppercase">
+                              <ListChecks className="size-3.5" />
+                              Now practicing
+                            </p>
+                            <p className="mt-1 text-sm font-medium leading-snug text-foreground">
+                              {activeQuestion}
+                            </p>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    )}
+
+                    {isRowLoaded && (
+                      <div className="flex items-center gap-3">
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={onRestart}
+                          aria-label="Restart"
+                          className="shrink-0 text-muted-foreground"
+                        >
+                          <RotateCcw />
+                        </Button>
+                        <span className="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+                          {formatTime(currentTime)}
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={duration || 0}
+                          step={0.1}
+                          value={currentTime}
+                          onChange={(e) => onSeek(Number(e.target.value))}
+                          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                        />
+                        <span className="w-9 shrink-0 text-xs text-muted-foreground tabular-nums">
+                          {formatTime(duration)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+
+              {totalSessionPages > 1 && (
+                <div className="flex items-center justify-between gap-3 pt-6">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSessionsPage(currentSessionsPage - 1)}
+                    disabled={currentSessionsPage <= 1}
+                  >
+                    <ChevronLeft />
+                    Previous
+                  </Button>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    Page {currentSessionsPage} of {totalSessionPages}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSessionsPage(currentSessionsPage + 1)}
+                    disabled={currentSessionsPage >= totalSessionPages}
+                  >
+                    Next
+                    <ChevronRight />
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="relative z-10 flex flex-col items-center gap-3 py-6 text-center">
+              <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Headphones className="size-6" />
+              </div>
+              <div>
+                <p className="font-medium text-foreground">No practice sessions yet</p>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Upload your resume to generate your first personalized practice script and audio.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <audio
+            ref={audioRef}
+            src={audioUrl ?? undefined}
+            preload="metadata"
+            className="hidden"
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={(e) => {
+              setIsPlaying(false)
+              e.currentTarget.currentTime = 0
+              setCurrentTime(0)
+            }}
+            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+          />
+        </motion.div>
+      </div>
+
+      {/* Practice questions */}
+      <motion.div
+        ref={questionsSectionRef}
+        tabIndex={-1}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.3 }}
+        className="mt-8 scroll-mt-6 outline-none"
+      >
+        <div className="relative space-y-4 overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-4 shadow-sm shadow-primary/10 sm:p-5">
+          <div className="pointer-events-none absolute -right-8 -top-10 size-32 rounded-full bg-primary/15 blur-2xl" />
+
+          <div className="relative flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="relative flex size-10 shrink-0 items-center justify-center">
+                <motion.span
+                  className="absolute inset-0 rounded-full bg-primary/25"
+                  animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
+                  transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+                />
+                <div className="relative flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md shadow-primary/30">
+                  <ListChecks className="size-5" />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <label className="text-base font-bold tracking-tight text-foreground">
+                    Practice Questions
+                  </label>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[0.65rem] font-semibold text-primary-foreground">
+                    <Sparkles className="size-3" />
+                    Recommended
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs font-medium text-muted-foreground">
+                  Pick the questions you&apos;d like this session&apos;s script to focus on.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-xs font-bold tabular-nums",
+                  selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-primary/10 text-primary"
+                )}
+              >
+                {selectedQuestions.length}/{FREE_PLAN_MAX_QUESTIONS} selected
+              </span>
+              <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide text-muted-foreground uppercase">
+                Free plan
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {PRACTICE_QUESTIONS.map((question, index) => {
+              const isSelected = selectedQuestions.includes(question)
+              const isAtCap = !isSelected && selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
+              return (
+                <motion.button
+                  key={question}
+                  type="button"
+                  onClick={() => onToggleQuestion(question)}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2, delay: Math.min(index, 10) * 0.02 }}
+                  className={cn(
+                    "group relative flex items-start gap-2.5 rounded-xl border p-3 text-left text-sm transition-all",
+                    isSelected
+                      ? "border-primary bg-primary/10 text-foreground shadow-sm shadow-primary/10"
+                      : isAtCap
+                        ? "border-border/60 bg-muted/10 text-muted-foreground/70"
+                        : "border-border bg-muted/20 text-foreground hover:border-primary/40 hover:bg-primary/5"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border transition-colors",
+                      isSelected
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-background text-transparent"
+                    )}
+                  >
+                    <CheckCircle2 className="size-3.5" />
+                  </span>
+                  <span className="flex-1 leading-snug">{question}</span>
+                  {isAtCap && (
+                    <Lock className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/60" />
+                  )}
+                </motion.button>
+              )
+            })}
+          </div>
+
+          <AnimatePresence>
+            {selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="flex items-center justify-between gap-3 overflow-hidden rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs"
+              >
+                <span className="text-muted-foreground">
+                  You&apos;ve hit the free plan&apos;s {FREE_PLAN_MAX_QUESTIONS}-question limit.
+                </span>
+                <Button size="xs" variant="outline" nativeButton={false} render={<Link href="/upgrade" />}>
+                  Upgrade
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </motion.div>
+
+      {/* Generate action */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.4 }}
+        className="mt-8 flex flex-wrap items-center justify-between gap-4"
+      >
+        <Button
+          size="lg"
+          onClick={onGenerateVideo}
+          disabled={!canGenerate || generating}
+          className="shadow-md shadow-primary/20"
+        >
+          {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+          Generate Scripts
+        </Button>
+        <AnimatePresence>
+          {generating && (
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4 }}
+              className="text-sm font-medium text-primary"
+            >
+              Generating Scripts......
+            </motion.p>
+          )}
+        </AnimatePresence>
       </motion.div>
 
       <Dialog
@@ -678,213 +992,6 @@ function PracticeCoach() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Generation form */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.2 }}
-        className="mt-8 rounded-3xl border border-border bg-card p-6 shadow-sm md:p-8"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Sparkles className="size-4" />
-            </div>
-            <div>
-              <h2 className="font-semibold text-foreground">Create a new practice session</h2>
-              <p className="text-sm text-muted-foreground">
-                Upload your resume and the role details — we&apos;ll generate a tailored script and audio.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex shrink-0 flex-col items-end gap-2">
-            <Button
-              size="lg"
-              onClick={onGenerateVideo}
-              disabled={!resumeFile || generating}
-              className="shadow-md shadow-primary/20"
-            >
-              {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              Generate Scripts
-            </Button>
-            <AnimatePresence>
-              {generating && (
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.4 }}
-                  className="text-sm font-medium text-primary"
-                >
-                  Generating Scripts….
-                </motion.p>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-
-        <div className="mt-6 space-y-6">
-          <div className="space-y-2">
-            <label className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-              <FileText className="size-4 text-primary" />
-              Upload Resume
-            </label>
-            <FileUpload key={resumeUploadKey} onChange={onResumeFileChange} />
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
-              <Briefcase className="size-4 text-primary" />
-              Job Title
-            </label>
-            <Input
-              placeholder="Ex. Full Stack React Developer"
-              className="flex-1"
-              value={jobTitle}
-              onChange={(e) => setJobTitle(e.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
-            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
-              <FileText className="size-4 text-primary" />
-              Job Description
-            </label>
-            <Textarea
-              placeholder="Enter or Paste Job Description"
-              className="h-[140px] flex-1"
-              value={jobDescription}
-              onChange={(e) => setJobDescription(e.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-            <label className="flex w-36 shrink-0 items-center gap-1.5 text-sm font-medium text-foreground">
-              <Globe className="size-4 text-primary" />
-              Language
-            </label>
-            <select
-              value={language}
-              onChange={(e) => setLanguageOverride(e.target.value)}
-              className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-64"
-            >
-              {LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.flag} {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="relative space-y-4 overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent p-4 shadow-sm shadow-primary/10 sm:p-5">
-            <div className="pointer-events-none absolute -right-8 -top-10 size-32 rounded-full bg-primary/15 blur-2xl" />
-
-            <div className="relative flex flex-wrap items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="relative flex size-10 shrink-0 items-center justify-center">
-                  <motion.span
-                    className="absolute inset-0 rounded-full bg-primary/25"
-                    animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
-                    transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
-                  />
-                  <div className="relative flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md shadow-primary/30">
-                    <ListChecks className="size-5" />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-base font-bold tracking-tight text-foreground">
-                      Practice Questions
-                    </label>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[0.65rem] font-semibold text-primary-foreground">
-                      <Sparkles className="size-3" />
-                      Recommended
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-xs font-medium text-muted-foreground">
-                    Pick the questions you&apos;d like this session&apos;s script to focus on.
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-xs font-bold tabular-nums",
-                    selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-primary/10 text-primary"
-                  )}
-                >
-                  {selectedQuestions.length}/{FREE_PLAN_MAX_QUESTIONS} selected
-                </span>
-                <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide text-muted-foreground uppercase">
-                  Free plan
-                </span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {PRACTICE_QUESTIONS.map((question, index) => {
-                const isSelected = selectedQuestions.includes(question)
-                const isAtCap = !isSelected && selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS
-                return (
-                  <motion.button
-                    key={question}
-                    type="button"
-                    onClick={() => onToggleQuestion(question)}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2, delay: Math.min(index, 10) * 0.02 }}
-                    className={cn(
-                      "group relative flex items-start gap-2.5 rounded-xl border p-3 text-left text-sm transition-all",
-                      isSelected
-                        ? "border-primary bg-primary/10 text-foreground shadow-sm shadow-primary/10"
-                        : isAtCap
-                          ? "border-border/60 bg-muted/10 text-muted-foreground/70"
-                          : "border-border bg-muted/20 text-foreground hover:border-primary/40 hover:bg-primary/5"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border transition-colors",
-                        isSelected
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-border bg-background text-transparent"
-                      )}
-                    >
-                      <CheckCircle2 className="size-3.5" />
-                    </span>
-                    <span className="flex-1 leading-snug">{question}</span>
-                    {isAtCap && (
-                      <Lock className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/60" />
-                    )}
-                  </motion.button>
-                )
-              })}
-            </div>
-
-            <AnimatePresence>
-              {selectedQuestions.length >= FREE_PLAN_MAX_QUESTIONS && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="flex items-center justify-between gap-3 overflow-hidden rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs"
-                >
-                  <span className="text-muted-foreground">
-                    You&apos;ve hit the free plan&apos;s {FREE_PLAN_MAX_QUESTIONS}-question limit.
-                  </span>
-                  <Button size="xs" variant="outline" nativeButton={false} render={<Link href="/upgrade" />}>
-                    Upgrade
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </motion.div>
     </div>
   )
 }

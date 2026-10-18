@@ -8,6 +8,7 @@ export const SavePracticeCoachGeneration = mutation({
         jobTitle: v.optional(v.string()),
         jobDescription: v.optional(v.string()),
         selectedQuestions: v.optional(v.array(v.string())),
+        lang: v.optional(v.string()),
         questionTimeline: v.optional(
             v.array(v.object({ question: v.string(), startTime: v.number() }))
         ),
@@ -21,6 +22,7 @@ export const SavePracticeCoachGeneration = mutation({
             jobTitle: args.jobTitle,
             jobDescription: args.jobDescription,
             selectedQuestions: args.selectedQuestions,
+            lang: args.lang,
             questionTimeline: args.questionTimeline,
             webhookResponse: args.webhookResponse,
             audioUrl: args.audioUrl,
