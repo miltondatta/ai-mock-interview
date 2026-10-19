@@ -20,6 +20,9 @@ export default defineSchema({
       // step - carried through to the live ElevenLabs conversation so the agent
       // speaks/listens in that language instead of always defaulting to English.
       lang: v.optional(v.string()),
+      // Feedback Language picked on Create Interview - the language the
+      // feedback report is generated in (see app/api/interview/end).
+      feedbackLang: v.optional(v.string()),
       userId: v.id('UserTable'),
       status: v.string(),
       elevenlabsConversationId: v.optional(v.string()),
@@ -61,6 +64,28 @@ export default defineSchema({
       active: v.boolean(),
       sortOrder: v.number(),
       updatedAt: v.number(),
+    }),
+    // Languages managed from admin Settings > Language. Codes are the ISO
+    // 639-1 (or ElevenLabs-specific, e.g. "fil") language codes ElevenLabs uses.
+    AdminLanguageTable: defineTable({
+      code: v.string(),
+      label: v.string(),
+      flag: v.string(),
+      // Interview opening greeting for languages without a built-in one in
+      // utils/elevenlabsContext.ts - auto-translated with Gemini when the
+      // language is added, editable by the admin. Uses {name}/{role} placeholders.
+      greeting: v.optional(v.string()),
+      // Used for {role} when the interview has no job title, e.g. "this position".
+      roleFallback: v.optional(v.string()),
+      createdAt: v.number(),
+    }),
+    // Interview Modes managed from admin Settings > Interview Preferences and
+    // listed on Create Interview / Settings > Interview Preferences.
+    InterviewModeTable: defineTable({
+      value: v.string(),
+      label: v.string(),
+      sortOrder: v.number(),
+      createdAt: v.number(),
     }),
 
     // Candidate-facing Settings page (app/(routes)/settings) - Language tab.

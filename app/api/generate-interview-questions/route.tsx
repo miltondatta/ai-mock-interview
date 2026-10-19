@@ -137,6 +137,7 @@ export async function POST(req:NextRequest) {
     const level = (formData.get('level') as string | null) || 'basic';
     const qno = (formData.get('qno') as string | null) || '3';
     const lang = (formData.get('lang') as string | null) || 'en';
+    const feedbackLang = (formData.get('feedbackLang') as string | null) || 'en';
     const hasFile = !!file && file.size > 0;
     // Paused until package/credit options are integrated - resume by uncommenting.
     // const rateLimitUserId = user?.primaryEmailAddress?.emailAddress??'';
@@ -226,6 +227,7 @@ export async function POST(req:NextRequest) {
             level,
             qno: requestedQno,
             lang,
+            feedbackLang,
         });
 
         return NextResponse.json({

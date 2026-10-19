@@ -102,6 +102,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
     formData_.append("level", formData.level || "basic")
     formData_.append("qno", String(formData.qno || "3"))
     formData_.append("lang", languages.interviewLanguage || DEFAULT_INTERVIEW_LANGUAGE)
+    formData_.append("feedbackLang", languages.feedbackLanguage || DEFAULT_FEEDBACK_LANGUAGE)
 
     try {
       const res = await axios.post("/api/generate-interview-questions", formData_)
@@ -150,6 +151,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
             onHandleInputChange={onHandleInputChange}
             file={file}
             onFileSelected={setFile}
+            onFileRemoved={() => setFile(null)}
             languages={languages}
             onLanguageChange={onLanguageChange}
             canProceed={canProceed}

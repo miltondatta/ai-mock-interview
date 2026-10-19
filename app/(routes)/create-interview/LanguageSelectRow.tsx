@@ -1,5 +1,5 @@
 import React from "react"
-import { LANGUAGE_OPTIONS } from "../settings/languages"
+import { useLanguageOptions } from "../settings/languages"
 
 interface LanguageSelectRowProps {
   icon: React.ElementType
@@ -11,6 +11,8 @@ interface LanguageSelectRowProps {
 }
 
 function LanguageSelectRow({ icon: Icon, iconClassName, title, description, value, onChange }: LanguageSelectRowProps) {
+  const languageOptions = useLanguageOptions()
+  const isAvailable = languageOptions.some((option) => option.value === value)
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-background p-3.5 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex gap-2.5">
@@ -27,7 +29,13 @@ function LanguageSelectRow({ icon: Icon, iconClassName, title, description, valu
         onChange={(e) => onChange(e.target.value)}
         className="h-9 w-full shrink-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-56"
       >
-        {LANGUAGE_OPTIONS.map((option) => (
+        {/* A saved language the admin has since removed isn't listed. */}
+        {!isAvailable && (
+          <option value={value} disabled hidden>
+            Select a language…
+          </option>
+        )}
+        {languageOptions.map((option) => (
           <option key={option.value} value={option.value}>
             {option.flag} {option.label}
           </option>

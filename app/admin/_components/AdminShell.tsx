@@ -12,14 +12,35 @@ import {
   X,
   LogOut,
   ShieldCheck,
+  KeyRound,
+  SlidersHorizontal,
+  Languages,
+  ListChecks,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const MENU = [
+type MenuItem = {
+  name: string;
+  path: string;
+  icon: React.ElementType;
+  children?: { name: string; path: string; icon: React.ElementType }[];
+};
+
+const MENU: MenuItem[] = [
   { name: "Dashboard", path: "/admin", icon: LayoutDashboard },
   { name: "Users", path: "/admin/users", icon: Users },
   { name: "Subscription", path: "/admin/subscription", icon: CreditCard },
-  { name: "Settings", path: "/admin/settings", icon: Settings },
+  {
+    name: "Settings",
+    path: "/admin/settings",
+    icon: Settings,
+    children: [
+      { name: "Change Password", path: "/admin/settings/change-password", icon: KeyRound },
+      { name: "General Settings", path: "/admin/settings/general", icon: SlidersHorizontal },
+      { name: "Languages", path: "/admin/settings/language", icon: Languages },
+      { name: "Interview Modes", path: "/admin/settings/interview-modes", icon: ListChecks },
+    ],
+  },
 ];
 
 function isActive(pathname: string | null, path: string) {
@@ -36,21 +57,47 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         const Icon = item.icon;
         const active = isActive(pathname, item.path);
         return (
-          <Link
-            key={item.path}
-            href={item.path}
-            onClick={onNavigate}
-            aria-current={active ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-              active
-                ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          <div key={item.path} className="flex flex-col gap-1">
+            <Link
+              href={item.path}
+              onClick={onNavigate}
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                active
+                  ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              )}
+            >
+              <Icon className="size-[18px] shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </Link>
+            {item.children && (
+              <div className="ml-5 flex flex-col gap-1 border-l border-sidebar-border pl-3">
+                {item.children.map((child) => {
+                  const ChildIcon = child.icon;
+                  const childActive = isActive(pathname, child.path);
+                  return (
+                    <Link
+                      key={child.path}
+                      href={child.path}
+                      onClick={onNavigate}
+                      aria-current={childActive ? "page" : undefined}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        childActive
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                      )}
+                    >
+                      <ChildIcon className="size-4 shrink-0" />
+                      <span className="truncate">{child.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
             )}
-          >
-            <Icon className="size-[18px] shrink-0" />
-            <span className="truncate">{item.name}</span>
-          </Link>
+          </div>
         );
       })}
     </nav>
@@ -110,7 +157,11 @@ interface AdminShellProps {
 export default function AdminShell({ username, mustChangePassword, children }: AdminShellProps) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const current = MENU.find((m) => isActive(pathname, m.path))?.name ?? "Admin";
+  const currentItem = MENU.find((m) => isActive(pathname, m.path));
+  const current =
+    currentItem?.children?.find((c) => isActive(pathname, c.path))?.name ??
+    currentItem?.name ??
+    "Admin";
 
   return (
     <div className="min-h-screen bg-background">
@@ -175,7 +226,7 @@ export default function AdminShell({ username, mustChangePassword, children }: A
         {mustChangePassword && (
           <div className="border-b border-warning/30 bg-warning/10 px-4 py-2.5 text-sm text-warning-foreground md:px-6">
             You&apos;re still using the temporary password.{" "}
-            <Link href="/admin/settings" className="font-semibold underline underline-offset-2">
+            <Link href="/admin/settings/change-password" className="font-semibold underline underline-offset-2">
               Change it now
             </Link>
             .

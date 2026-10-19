@@ -15,12 +15,12 @@ import {
   SlidersHorizontal,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { INTERVIEW_MODES } from "../_components/InterviewOptions"
-import { LANGUAGE_OPTIONS } from "../settings/languages"
+import { useInterviewModes } from "../_components/InterviewOptions"
+import { findLanguageOption, LanguageOption, useLanguageOptions } from "../settings/languages"
 import { CreateInterviewFormData, LanguageSelection } from "./types"
 
-function getLanguageLabel(value: string) {
-  const option = LANGUAGE_OPTIONS.find((item) => item.value === value)
+function getLanguageLabel(options: LanguageOption[], value: string) {
+  const option = findLanguageOption(options, value)
   return option ? `${option.flag} ${option.label}` : value
 }
 
@@ -92,7 +92,9 @@ function ReviewStep({
   onGenerate,
   onStartInterview,
 }: ReviewStepProps) {
-  const modeLabel = INTERVIEW_MODES.find((option) => option.value === formData.mode)?.label ?? formData.mode
+  const interviewModes = useInterviewModes()
+  const languageOptions = useLanguageOptions()
+  const modeLabel = interviewModes.find((option) => option.value === formData.mode)?.label ?? formData.mode
 
   return (
     <div className="flex flex-col gap-6">
@@ -132,8 +134,8 @@ function ReviewStep({
         </SectionCard>
 
         <SectionCard icon={Globe} title="Language Settings" onEdit={onEditLanguageSettings}>
-          <Row label="Interview Language" value={getLanguageLabel(languages.interviewLanguage)} />
-          <Row label="Feedback Language" value={getLanguageLabel(languages.feedbackLanguage)} />
+          <Row label="Interview Language" value={getLanguageLabel(languageOptions, languages.interviewLanguage)} />
+          <Row label="Feedback Language" value={getLanguageLabel(languageOptions, languages.feedbackLanguage)} />
         </SectionCard>
       </div>
 

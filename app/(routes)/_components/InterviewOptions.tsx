@@ -1,6 +1,8 @@
 "use client"
 
 import React, { useState } from 'react'
+import { useQuery } from 'convex/react'
+import { api } from '@/convex/_generated/api'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { Gauge, Hash, ListChecks } from 'lucide-react'
@@ -19,6 +21,16 @@ export const INTERVIEW_MODES = [
   { value: 'stress', label: 'Stress Interview' },
   { value: 'rapid-fire', label: 'Rapid Fire' },
 ]
+
+// Interview Modes are managed from the admin panel (Settings > Interview
+// Preferences). INTERVIEW_MODES is the fallback while the list loads or before
+// the admin has seeded it.
+export function useInterviewModes() {
+  const modes = useQuery(api.InterviewModes.ListInterviewModes)
+  return modes && modes.length > 0
+    ? modes.map(({ value, label }) => ({ value, label }))
+    : INTERVIEW_MODES
+}
 
 // Used by Create Interview when the candidate hasn't saved their own
 // defaults under Settings > Interview Preferences.
@@ -71,6 +83,7 @@ function OptionPill({
 }
 
 function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOptionsProps) {
+  const interviewModes = useInterviewModes()
   const isCustomQno = qno !== '2' && qno !== '3'
   const [qnoMode, setQnoMode] = useState<'2' | '3' | 'custom'>(isCustomQno ? 'custom' : (qno as '2' | '3'))
   const [customValue, setCustomValue] = useState(isCustomQno ? qno : '')
@@ -94,7 +107,7 @@ function InterviewOptions({ mode, level, qno, onHandleInputChange }: InterviewOp
           Interview Modes
         </label>
         <div className="mt-2.5 flex flex-wrap gap-2">
-          {INTERVIEW_MODES.map((option) => (
+          {interviewModes.map((option) => (
             <OptionPill
               key={option.value}
               selected={mode === option.value}

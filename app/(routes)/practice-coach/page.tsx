@@ -40,7 +40,7 @@ import Link from "next/link"
 import { Id } from "@/convex/_generated/dataModel"
 import { cn } from "@/lib/utils"
 import { PRACTICE_QUESTIONS, FREE_PLAN_MAX_QUESTIONS } from "./questions"
-import { DEFAULT_PRACTICE_COACH_LANGUAGE, LANGUAGE_OPTIONS } from "../settings/languages"
+import { DEFAULT_PRACTICE_COACH_LANGUAGE, findLanguageOption, useLanguageOptions } from "../settings/languages"
 
 // "Tell me about yourself" is pre-selected for every new session - it's the
 // de facto opener in almost any interview, so starting the candidate there
@@ -124,6 +124,7 @@ function PracticeCoach() {
   const [formNotice, setFormNotice] = useState<{ type: "required" | "advisory"; message: string } | null>(null)
   const [sessionsPage, setSessionsPage] = useState(1)
   const questionsSectionRef = useRef<HTMLDivElement>(null)
+  const languageOptions = useLanguageOptions()
   // Only auto-advance once per form fill, so going back to tweak a field
   // doesn't keep yanking the candidate down to the questions.
   const hasAdvancedToQuestionsRef = useRef(false)
@@ -497,7 +498,13 @@ function PracticeCoach() {
                 }}
                 className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-64"
               >
-                {LANGUAGE_OPTIONS.map((option) => (
+                {/* A saved language the admin has since removed isn't listed. */}
+                {!languageOptions.some((option) => option.value === language) && (
+                  <option value={language} disabled hidden>
+                    Select a language…
+                  </option>
+                )}
+                {languageOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.flag} {option.label}
                   </option>
@@ -521,7 +528,7 @@ function PracticeCoach() {
               {pagedGenerations.map((generation) => {
                 const isRowLoaded = !!audioUrl && !!generation.audioUrl && audioUrl === generation.audioUrl
                 const isRowGeneratingAudio = generatingAudioId === generation._id
-                const generationLanguage = LANGUAGE_OPTIONS.find((option) => option.value === generation.lang)
+                const generationLanguage = findLanguageOption(languageOptions, generation.lang)
                 // Only the question whose narration has started by the current
                 // playback position - timeline entries are already in the
                 // order they're read, so the last one at or before now is active.

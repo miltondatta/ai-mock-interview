@@ -17,6 +17,7 @@ interface FormStepProps {
   onHandleInputChange: (field: string, value: string) => void
   file: File | null
   onFileSelected: (file: File) => void
+  onFileRemoved: () => void
   languages: LanguageSelection
   onLanguageChange: (field: keyof LanguageSelection, value: string) => void
   canProceed: boolean
@@ -29,6 +30,7 @@ function FormStep({
   onHandleInputChange,
   file,
   onFileSelected,
+  onFileRemoved,
   languages,
   onLanguageChange,
   canProceed,
@@ -78,7 +80,7 @@ function FormStep({
               Resume Upload
             </label>
             <div className="mt-2">
-              <ResumeUpload setFiles={onFileSelected} file={file} />
+              <ResumeUpload setFiles={onFileSelected} file={file} onRemove={onFileRemoved} />
             </div>
           </div>
 

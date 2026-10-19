@@ -8,7 +8,7 @@ import { Doc, Id } from "@/convex/_generated/dataModel"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { Button } from "@/components/ui/button"
 import {
-  LANGUAGE_OPTIONS,
+  useLanguageOptions,
   DEFAULT_INTERVIEW_LANGUAGE,
   DEFAULT_FEEDBACK_LANGUAGE,
   DEFAULT_PRACTICE_COACH_LANGUAGE,
@@ -25,6 +25,8 @@ interface LanguageRowProps {
 }
 
 function LanguageRow({ icon: Icon, iconClassName, title, description, value, onChange, helperText }: LanguageRowProps) {
+  const languageOptions = useLanguageOptions()
+  const isAvailable = languageOptions.some((option) => option.value === value)
   return (
     <div className="flex flex-col gap-4 rounded-xl border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex gap-3">
@@ -45,7 +47,13 @@ function LanguageRow({ icon: Icon, iconClassName, title, description, value, onC
           onChange={(e) => onChange(e.target.value)}
           className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
-          {LANGUAGE_OPTIONS.map((option) => (
+          {/* A saved language the admin has since removed isn't listed. */}
+          {!isAvailable && (
+            <option value={value} disabled hidden>
+              Select a language…
+            </option>
+          )}
+          {languageOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {option.flag} {option.label}
             </option>

@@ -1,4 +1,4 @@
-import { mutation, query, QueryCtx, MutationCtx } from "./_generated/server";
+import { internalMutation, mutation, query, QueryCtx, MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 
@@ -374,5 +374,172 @@ export const SaveSettings = mutation({
         await ctx.db.insert("AdminSettingsTable", { key, value });
       }
     }
+  },
+});
+
+/* -------------------------------- Languages ------------------------------ */
+
+// Mirrors LANGUAGE_OPTIONS in app/(routes)/settings/languages.ts - the
+// languages the app shipped with before they became admin-managed.
+const DEFAULT_LANGUAGES = [
+  { code: "en", label: "English", flag: "🇺🇸" },
+  { code: "bn", label: "Bangla (বাংলা)", flag: "🇧🇩" },
+  { code: "hi", label: "Hindi (हिन्दी)", flag: "🇮🇳" },
+  { code: "es", label: "Spanish (Español)", flag: "🇪🇸" },
+  { code: "fr", label: "French (Français)", flag: "🇫🇷" },
+  { code: "de", label: "German (Deutsch)", flag: "🇩🇪" },
+  { code: "ar", label: "Arabic (العربية)", flag: "🇸🇦" },
+  { code: "zh", label: "Chinese (中文)", flag: "🇨🇳" },
+];
+
+export const ListLanguages = query({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const rows = await ctx.db.query("AdminLanguageTable").collect();
+    return rows.sort((a, b) => a.createdAt - b.createdAt);
+  },
+});
+
+// Inserts the starter language set the first time the Settings page is opened.
+export const SeedDefaultLanguages = mutation({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const existing = await ctx.db.query("AdminLanguageTable").collect();
+    if (existing.length > 0) return { seeded: false };
+    const now = Date.now();
+    for (const [i, language] of DEFAULT_LANGUAGES.entries()) {
+      await ctx.db.insert("AdminLanguageTable", { ...language, createdAt: now + i });
+    }
+    return { seeded: true };
+  },
+});
+
+export const AddLanguage = mutation({
+  args: {
+    token: v.string(),
+    code: v.string(),
+    label: v.string(),
+    flag: v.string(),
+    greeting: v.optional(v.string()),
+    roleFallback: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const existing = await ctx.db
+      .query("AdminLanguageTable")
+      .filter((q) => q.eq(q.field("code"), args.code))
+      .collect();
+    if (existing.length > 0) throw new Error("Language already added");
+    return await ctx.db.insert("AdminLanguageTable", {
+      code: args.code,
+      label: args.label,
+      flag: args.flag,
+      greeting: args.greeting,
+      roleFallback: args.roleFallback,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const UpdateLanguageGreeting = mutation({
+  args: {
+    token: v.string(),
+    id: v.id("AdminLanguageTable"),
+    greeting: v.string(),
+    roleFallback: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    await ctx.db.patch(args.id, { greeting: args.greeting, roleFallback: args.roleFallback });
+  },
+});
+
+// Internal only (not callable from the browser) - lets a greeting be set from
+// the CLI, e.g. `npx convex run admin:SetLanguageGreetingByCode`, when Gemini
+// isn't configured.
+export const SetLanguageGreetingByCode = internalMutation({
+  args: { code: v.string(), greeting: v.string(), roleFallback: v.string() },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("AdminLanguageTable")
+      .filter((q) => q.eq(q.field("code"), args.code))
+      .collect();
+    if (!rows[0]) throw new Error("Language not found");
+    if (!args.greeting.includes("{name}") || !args.greeting.includes("{role}")) {
+      throw new Error("Greeting must include {name} and {role}");
+    }
+    await ctx.db.patch(rows[0]._id, { greeting: args.greeting, roleFallback: args.roleFallback });
+  },
+});
+
+// English is the app-wide default/fallback language, so it can't be removed.
+export const RemoveLanguage = mutation({
+  args: { token: v.string(), id: v.id("AdminLanguageTable") },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const language = await ctx.db.get(args.id);
+    if (!language) return;
+    if (language.code === "en") throw new Error("English is the default language");
+    await ctx.db.delete(args.id);
+  },
+});
+
+/* ----------------------------- Interview Modes --------------------------- */
+
+// Mirrors INTERVIEW_MODES in app/(routes)/_components/InterviewOptions.tsx.
+const DEFAULT_INTERVIEW_MODES = [
+  { value: "hr", label: "HR Interview" },
+  { value: "technical", label: "Technical" },
+  { value: "behavioral", label: "Behavioral (STAR-based)" },
+  { value: "managerial", label: "Managerial (Leadership & Management)" },
+  { value: "system-design", label: "System Design" },
+  { value: "coding", label: "Coding" },
+  { value: "case-study", label: "Case Study (Business Scenarios)" },
+  { value: "project-management", label: "Project Management" },
+  { value: "graduate-fresher", label: "Graduate/Fresher" },
+  { value: "executive", label: "Executive" },
+  { value: "stress", label: "Stress Interview" },
+  { value: "rapid-fire", label: "Rapid Fire" },
+];
+
+export const SeedDefaultInterviewModes = mutation({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const existing = await ctx.db.query("InterviewModeTable").collect();
+    if (existing.length > 0) return { seeded: false };
+    const now = Date.now();
+    for (const [i, mode] of DEFAULT_INTERVIEW_MODES.entries()) {
+      await ctx.db.insert("InterviewModeTable", { ...mode, sortOrder: i, createdAt: now });
+    }
+    return { seeded: true };
+  },
+});
+
+export const AddInterviewMode = mutation({
+  args: { token: v.string(), value: v.string(), label: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const modes = await ctx.db.query("InterviewModeTable").collect();
+    if (modes.some((m) => m.value === args.value)) {
+      throw new Error("Interview mode already exists");
+    }
+    const sortOrder = modes.reduce((max, m) => Math.max(max, m.sortOrder), -1) + 1;
+    return await ctx.db.insert("InterviewModeTable", {
+      value: args.value,
+      label: args.label,
+      sortOrder,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const RemoveInterviewMode = mutation({
+  args: { token: v.string(), id: v.id("InterviewModeTable") },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    await ctx.db.delete(args.id);
   },
 });

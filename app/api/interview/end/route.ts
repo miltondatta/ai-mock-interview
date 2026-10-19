@@ -114,23 +114,56 @@ export async function POST(req: NextRequest) {
     // dashboard and have the interview marked completed even if this fails.
     if (feedbackMessages && feedbackMessages.length > 0) {
         try {
+            // modes is the Interview Mode's display label (e.g. "HR Interview"),
+            // falling back to the stored value for a mode the admin
+            // has since removed. lang is the Feedback Language code picked on Create
+            // Interview; older interviews didn't store one, so fall back to the
+            // candidate's Settings feedback language, then English.
+            const interviewModes = await convexClient.query(api.InterviewModes.ListInterviewModes, {});
+            const modes =
+                interviewModes.find((m) => m.value === interview.mode)?.label ?? interview.mode ?? "";
+            let lang = interview.feedbackLang;
+            if (!lang) {
+                const settings = await convexClient.query(api.UserSettings.GetUserSettings, {
+                    userId: convexUser._id,
+                });
+                lang = settings?.feedbackLanguage || "en";
+            }
+
             const feedbackRes = await fetch(FEEDBACK_WEBHOOK_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ messages: toFeedbackTranscriptString(feedbackMessages) }),
+                body: JSON.stringify({
+                    messages: toFeedbackTranscriptString(feedbackMessages),
+                    modes,
+                    lang,
+                }),
             });
 
-            if (feedbackRes.ok) {
-                const feedbackData = await feedbackRes.json();
-                // N8N returns a raw Gemini candidate object; the feedback text lives at content.parts[0].text
-                const rawFeedback = feedbackData?.content?.parts?.[0]?.text;
+            // Read as text first - an n8n "Respond to Webhook" node may return plain
+            // text, an array of items, or a raw Gemini candidate object, and a
+            // non-JSON body would otherwise throw and drop the feedback entirely.
+            const responseText = await feedbackRes.text();
+            if (feedbackRes.ok && responseText.trim()) {
+                let feedbackData: unknown = responseText;
+                try {
+                    feedbackData = JSON.parse(responseText);
+                } catch {
+                    // Plain-text response - saved as-is.
+                }
+                const item = Array.isArray(feedbackData) ? feedbackData[0] : feedbackData;
+                // A raw Gemini candidate object keeps the feedback text at content.parts[0].text.
+                const rawFeedback =
+                    typeof item === "object" && item !== null
+                        ? (item as { content?: { parts?: { text?: unknown }[] } }).content?.parts?.[0]?.text
+                        : undefined;
                 await convexClient.mutation(api.Interview.SaveInterviewFeedback, {
                     interviewId: interviewId as Id<"InterviewSessionTable">,
                     userId: convexUser._id,
-                    feedback: typeof rawFeedback === "string" ? rawFeedback : feedbackData,
+                    feedback: typeof rawFeedback === "string" ? rawFeedback : item,
                 });
             } else {
-                console.error("Feedback webhook failed:", feedbackRes.status);
+                console.error("Feedback webhook failed:", feedbackRes.status, responseText.slice(0, 500));
             }
         } catch (e) {
             console.error("Failed to generate interview feedback:", e);

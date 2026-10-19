@@ -56,11 +56,44 @@ export function resolveInterviewLanguage(language: string | null | undefined): s
     return base && base in FIRST_MESSAGE_TEMPLATES ? base : "en";
 }
 
+// Languages whose greeting is hand-written above. Any other language added from
+// the admin panel uses a greeting stored with it in Convex (AdminLanguageTable).
+export function hasBuiltInGreeting(language: string): boolean {
+    return language in FIRST_MESSAGE_TEMPLATES;
+}
+
+// Base language code without regional suffix ("pt-BR" -> "pt"), without the
+// English fallback resolveInterviewLanguage applies.
+export function normalizeLanguageCode(language: string | null | undefined): string {
+    return (language ?? "").trim().toLowerCase().split(/[-_]/)[0];
+}
+
+// The English greeting as a {name}/{role} template - the source text Gemini
+// translates for admin-added languages. Keep in sync with FIRST_MESSAGE_TEMPLATES.en.
+export const ENGLISH_GREETING_TEMPLATE = FIRST_MESSAGE_TEMPLATES.en("{name}", "{role}");
+export const ENGLISH_ROLE_FALLBACK = ROLE_FALLBACK.en;
+
+// A stored greeting is only usable if both placeholders survived translation/editing.
+export function isValidGreetingTemplate(template: string): boolean {
+    return template.includes("{name}") && template.includes("{role}");
+}
+
 export function buildInterviewFirstMessage(candidateName: string, jobTitle: string | undefined, language: string): string {
     const template = FIRST_MESSAGE_TEMPLATES[language] ?? FIRST_MESSAGE_TEMPLATES.en;
     const role = jobTitle?.trim() || ROLE_FALLBACK[language] || ROLE_FALLBACK.en;
     return template(candidateName, role);
 }
+
+const QUESTION_FLOW_NOTE = [
+    "(Application note: this is the complete question list for this session, supplied up front.",
+    "The application will not send questions one at a time - you move through this list yourself, in order.",
+    "The opening self-introduction is not one of these questions.",
+    "When the candidate says Done or Pass on the self-introduction, ask question 1.",
+    "After each later Done or Pass, briefly acknowledge and ask the next numbered question in the same turn -",
+    "never say you are moving to the next question without asking it.",
+    "Ask every question in the interview language.",
+    "After the last question is answered or passed, thank the candidate and conclude the interview.)",
+].join(" ");
 
 export function buildInterviewDynamicVariables(params: {
     candidateName: string;
@@ -73,11 +106,25 @@ export function buildInterviewDynamicVariables(params: {
     // own prompt/first message can reference {{interview_language}} to
     // translate/convert its first message into the candidate's chosen language.
     language?: string;
+    // Greeting for an admin-added language (see hasBuiltInGreeting). When set,
+    // `language` is used as-is instead of falling back to English.
+    customGreeting?: { template: string; roleFallback?: string | null } | null;
 }): InterviewDynamicVariables {
-    const questionList = params.questions
-        .map((qa, index) => `${index + 1}. ${qa.question}`)
-        .join("\n");
-    const language = resolveInterviewLanguage(params.language);
+    // The agent's prompt says "the application controls which question comes
+    // next", but the whole list is supplied once up front - nothing sends a
+    // "next question" later. Without this note the agent announces it's moving
+    // on after Done/Pass and then waits for a question that never arrives.
+    const questionList =
+        params.questions.map((qa, index) => `${index + 1}. ${qa.question}`).join("\n") +
+        `\n\n${QUESTION_FLOW_NOTE}`;
+    const language = params.customGreeting
+        ? normalizeLanguageCode(params.language)
+        : resolveInterviewLanguage(params.language);
+    const firstMessage = params.customGreeting
+        ? params.customGreeting.template
+              .replaceAll("{name}", params.candidateName)
+              .replaceAll("{role}", params.jobTitle?.trim() || params.customGreeting.roleFallback || ROLE_FALLBACK.en)
+        : buildInterviewFirstMessage(params.candidateName, params.jobTitle, language);
 
     return {
         candidate_name: params.candidateName,
@@ -85,6 +132,6 @@ export function buildInterviewDynamicVariables(params: {
         job_title: params.jobTitle ?? "",
         job_description: params.jobDescription ?? "",
         interview_language: language,
-        first_message: buildInterviewFirstMessage(params.candidateName, params.jobTitle, language),
+        first_message: firstMessage,
     };
 }

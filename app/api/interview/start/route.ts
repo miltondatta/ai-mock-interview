@@ -6,7 +6,14 @@ import { Id } from "@/convex/_generated/dataModel";
 // Tavus agent call paused below - import kept commented alongside it, not removed.
 // import { buildTavusConversationalContext } from "@/utils/tavusContext";
 import { InterviewQA } from "@/utils/knowledgeBase";
-import { buildInterviewDynamicVariables, resolveInterviewLanguage } from "@/utils/elevenlabsContext";
+import {
+    buildInterviewDynamicVariables,
+    hasBuiltInGreeting,
+    isValidGreetingTemplate,
+    ENGLISH_GREETING_TEMPLATE,
+    normalizeLanguageCode,
+    resolveInterviewLanguage,
+} from "@/utils/elevenlabsContext";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -160,7 +167,26 @@ export async function POST(req: NextRequest) {
 
     // The interview's own language (not the feedback/Practice Coach setting),
     // normalized so regional variants like "bn-BD" resolve to "bn".
-    const language = resolveInterviewLanguage(interview.lang);
+    // Languages added from the admin panel have no built-in greeting - use the
+    // one stored with the language (auto-translated when it was added). Without
+    // one, the agent still runs the interview in that language and only the
+    // greeting falls back to English.
+    const requestedLanguage = normalizeLanguageCode(interview.lang);
+    let language = resolveInterviewLanguage(interview.lang);
+    let customGreeting: { template: string; roleFallback: string | null } | null = null;
+    if (requestedLanguage && !hasBuiltInGreeting(requestedLanguage)) {
+        const stored = await convexClient.query(api.Languages.GetLanguageGreeting, { code: requestedLanguage });
+        if (stored) {
+            language = requestedLanguage;
+            customGreeting = {
+                template:
+                    stored.greeting && isValidGreetingTemplate(stored.greeting)
+                        ? stored.greeting
+                        : ENGLISH_GREETING_TEMPLATE,
+                roleFallback: stored.greeting ? stored.roleFallback : null,
+            };
+        }
+    }
 
     const dynamicVariables = buildInterviewDynamicVariables({
         candidateName: convexUser.name || "Candidate",
@@ -168,6 +194,7 @@ export async function POST(req: NextRequest) {
         jobTitle: interview.jobTitle,
         jobDescription: interview.jobDescription,
         language,
+        customGreeting,
     });
 
     // Every call mints a fresh WebRTC conversation token - ElevenLabs has no

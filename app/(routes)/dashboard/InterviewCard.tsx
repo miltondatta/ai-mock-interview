@@ -19,18 +19,23 @@ import { Doc } from '@/convex/_generated/dataModel'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import { UserDetailContext } from '@/context/UserDetailContext'
-import { INTERVIEW_MODES } from '../_components/InterviewOptions'
-import { DEFAULT_INTERVIEW_LANGUAGE, LANGUAGE_OPTIONS } from '../settings/languages'
+import { INTERVIEW_MODES, useInterviewModes } from '../_components/InterviewOptions'
+import { DEFAULT_INTERVIEW_LANGUAGE, findLanguageOption, LanguageOption, useLanguageOptions } from '../settings/languages'
 
-function getModeLabel(mode?: string) {
-  return INTERVIEW_MODES.find((option) => option.value === mode)?.label;
+// Falls back to the built-in list so interviews created with a mode the admin
+// has since removed still show their label.
+function getModeLabel(modes: { value: string; label: string }[], mode?: string) {
+  return (
+    modes.find((option) => option.value === mode)?.label ??
+    INTERVIEW_MODES.find((option) => option.value === mode)?.label
+  );
 }
 
 // Short badge text, e.g. "🇧🇩 Bangla" - drops the native-script suffix from the
 // settings label to keep the card header compact.
-function getLanguageLabel(lang?: string) {
+function getLanguageLabel(options: LanguageOption[], lang?: string) {
   const code = (lang || DEFAULT_INTERVIEW_LANGUAGE).toLowerCase().split(/[-_]/)[0];
-  const option = LANGUAGE_OPTIONS.find((o) => o.value === code);
+  const option = findLanguageOption(options, code);
   if (!option) return code.toUpperCase();
   return `${option.flag} ${option.label.replace(/\s*\(.*\)$/, '')}`;
 }
@@ -49,8 +54,10 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
   const [deleting, setDeleting] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const isCompleted = interview.status === 'completed';
-  const modeLabel = getModeLabel(interview.mode);
-  const languageLabel = getLanguageLabel(interview.lang);
+  const interviewModes = useInterviewModes();
+  const modeLabel = getModeLabel(interviewModes, interview.mode);
+  const languageOptions = useLanguageOptions();
+  const languageLabel = getLanguageLabel(languageOptions, interview.lang);
 
   const onStartInterview = () => {
     router.push(`/interview/${interview._id}/start`);
