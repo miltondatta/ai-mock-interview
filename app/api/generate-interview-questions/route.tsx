@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import ImageKit from "imagekit";
 import axios from "axios";
 // import { aj } from "@/utils/arcjet";
 import { currentUser } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { sanitizeFreeText } from "@/utils/sanitizeText";
+import { addResumeToLibrary, getLibraryResume } from "@/utils/resumeLibrary";
+import type { Id } from "@/convex/_generated/dataModel";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -139,6 +140,8 @@ export async function POST(req:NextRequest) {
     const lang = (formData.get('lang') as string | null) || 'en';
     const feedbackLang = (formData.get('feedbackLang') as string | null) || 'en';
     const hasFile = !!file && file.size > 0;
+    // Set instead of `file` when the candidate picked a resume from their library.
+    const savedResumeId = (formData.get('resumeId') as string | null) ?? '';
     // Paused until package/credit options are integrated - resume by uncommenting.
     // const rateLimitUserId = user?.primaryEmailAddress?.emailAddress??'';
     // const rateLimitStatus = await convexClient.mutation(api.rateLimit.consumeGenerateInterviewQuestions, { userId: rateLimitUserId });
@@ -155,23 +158,25 @@ export async function POST(req:NextRequest) {
     try{
 
         let resumeUrl: string | null = null;
+        let resumeFileName: string | undefined;
+        let resumeId: Id<'ResumeTable'> | undefined;
 
+        // A new upload goes into the candidate's resume library (reusing the
+        // existing entry if they've uploaded this exact file before); a resume
+        // picked from the library is resolved server-side after an ownership check.
         if (hasFile) {
-            const imagekit = new ImageKit({
-                publicKey: process.env.IMAGEKIT_URL_PUBLIC_KEY as string,
-                privateKey: process.env.IMAGEKIT_URL_PRIVATE_KEY as string,
-                urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT as string
-            });
-
-            const bytes = await file.arrayBuffer();
-            const buffer = Buffer.from(bytes);
-
-            const uploadPdf = await imagekit.upload({
-                file:buffer,
-                fileName: Date.now().toString()+".pdf",
-                isPublished: true
-            });
-            resumeUrl = uploadPdf?.url;
+            const resume = await addResumeToLibrary(convexClient, convexUser._id, file);
+            resumeUrl = resume.fileUrl;
+            resumeFileName = resume.fileName;
+            resumeId = resume.id;
+        } else if (savedResumeId) {
+            const resume = await getLibraryResume(convexClient, convexUser._id, savedResumeId);
+            if (!resume) {
+                return NextResponse.json({ error: "The selected resume could not be found." }, { status: 404 });
+            }
+            resumeUrl = resume.fileUrl;
+            resumeFileName = resume.fileName;
+            resumeId = resume.id;
         }
 
         //Call N8N workflow - same webhook handles resume-based and jobTitle/jobDescription-based generation
@@ -220,7 +225,8 @@ export async function POST(req:NextRequest) {
             questions,
             uid: convexUser._id,
             resumeUrl: resumeUrl ?? undefined,
-            resumeFileName: hasFile ? file.name : undefined,
+            resumeId,
+            resumeFileName,
             jobTitle: jobTitle ?? undefined,
             jobDescription: jobDescription ?? undefined,
             mode,
@@ -234,7 +240,7 @@ export async function POST(req:NextRequest) {
             interviewId,
             questions,
             resumeUrl,
-            resumeFileName: hasFile ? file.name : null,
+            resumeFileName: resumeFileName ?? null,
             status:200
         });
     }catch(e){

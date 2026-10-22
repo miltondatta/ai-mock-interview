@@ -10,6 +10,8 @@ export default defineSchema({
     InterviewSessionTable:defineTable({
       interviewQuestion: v.any(),
       resumeUrl: v.optional(v.string()),
+      // Resume library entry the resumeUrl came from (convex/Resumes.ts).
+      resumeId: v.optional(v.id('ResumeTable')),
       resumeFileName: v.optional(v.string()),
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
@@ -120,6 +122,8 @@ export default defineSchema({
     PracticeCoachTable: defineTable({
       userId: v.id('UserTable'),
       resumeUrl: v.optional(v.string()),
+      // Resume library entry the resumeUrl came from (convex/Resumes.ts).
+      resumeId: v.optional(v.id('ResumeTable')),
       jobTitle: v.optional(v.string()),
       jobDescription: v.optional(v.string()),
       selectedQuestions: v.optional(v.array(v.string())),
@@ -133,6 +137,55 @@ export default defineSchema({
       ),
       webhookResponse: v.any(),
       audioUrl: v.optional(v.string()),
+      createdAt: v.number(),
+    }),
+
+    // Resume library shared by Create Interview, Practice Coach and the Resume
+    // Match Analyzer (see convex/Resumes.ts). One row per distinct file - a
+    // re-upload of the same PDF (same contentHash) reuses the existing row
+    // instead of creating a duplicate.
+    ResumeTable: defineTable({
+      // Legacy: rows created before UserResumeTable existed carried the owner
+      // here. Ownership now lives only in UserResumeTable.
+      userId: v.optional(v.id('UserTable')),
+      // Original filename as uploaded by the candidate.
+      fileName: v.string(),
+      fileUrl: v.string(),
+      fileType: v.string(),
+      fileSize: v.optional(v.number()),
+      // SHA-256 of the file bytes - how duplicates are detected.
+      contentHash: v.optional(v.string()),
+      imagekitFileId: v.optional(v.string()),
+      uploadedAt: v.number(),
+    }),
+
+    // Which user owns which resume. A candidate only ever sees, and can only
+    // use, resumes mapped to them here.
+    UserResumeTable: defineTable({
+      userId: v.id('UserTable'),
+      resumeId: v.id('ResumeTable'),
+      // Copied from ResumeTable so per-user duplicate checks are one index lookup.
+      contentHash: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_user_hash', ['userId', 'contentHash'])
+      .index('by_user_resume', ['userId', 'resumeId']),
+
+    // Resume Match Analyzer: one row per successful analysis. `analysis` is the
+    // normalized n8n response (utils/resumeMatchAnalysis.ts) - the extracted
+    // resume text is never stored.
+    ResumeMatchAnalysisTable: defineTable({
+      userId: v.id('UserTable'),
+      // Resume reference as listed by GetUserResumes, e.g. "resume:<id>".
+      resumeId: v.string(),
+      resumeUrl: v.string(),
+      resumeFileName: v.optional(v.string()),
+      jobTitle: v.string(),
+      jobDescription: v.optional(v.string()),
+      jobDescriptionUrl: v.optional(v.string()),
+      lang: v.string(),
+      analysis: v.any(),
       createdAt: v.number(),
     }),
 });

@@ -11,6 +11,22 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
         period: DAY,
         capacity: 10,
     },
+    // Resume Match Analyzer - each analysis is two Gemini calls in n8n.
+    resumeMatchAnalysis: {
+        kind: "token bucket",
+        rate: 20,
+        period: DAY,
+        capacity: 20,
+    },
+});
+
+export const consumeResumeMatchAnalysis = mutation({
+    args: {
+        userId: v.string(),
+    },
+    handler: async (ctx, { userId }) => {
+        return await rateLimiter.limit(ctx, "resumeMatchAnalysis", { key: userId });
+    },
 });
 
 export const consumeGenerateInterviewQuestions = mutation({

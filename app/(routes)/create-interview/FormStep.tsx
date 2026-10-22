@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import ResumeUpload from "../_components/ResumeUpload"
+import SavedResumePicker, { type SavedResume } from "../_components/SavedResumePicker"
 import InterviewOptions from "../_components/InterviewOptions"
 import LanguageSelectRow from "./LanguageSelectRow"
 import { CreateInterviewFormData, LanguageSelection } from "./types"
@@ -18,6 +19,9 @@ interface FormStepProps {
   file: File | null
   onFileSelected: (file: File) => void
   onFileRemoved: () => void
+  savedResumeId: string | null
+  onSavedResumeSelected: (resume: SavedResume | null) => void
+  resumeUploadKey: number
   languages: LanguageSelection
   onLanguageChange: (field: keyof LanguageSelection, value: string) => void
   canProceed: boolean
@@ -31,6 +35,9 @@ function FormStep({
   file,
   onFileSelected,
   onFileRemoved,
+  savedResumeId,
+  onSavedResumeSelected,
+  resumeUploadKey,
   languages,
   onLanguageChange,
   canProceed,
@@ -79,8 +86,9 @@ function FormStep({
               <UploadCloud className="size-4 text-primary" />
               Resume Upload
             </label>
-            <div className="mt-2">
-              <ResumeUpload setFiles={onFileSelected} file={file} onRemove={onFileRemoved} />
+            <div className="mt-2 flex flex-col gap-3">
+              <SavedResumePicker selectedId={savedResumeId} onSelect={onSavedResumeSelected} />
+              <ResumeUpload key={resumeUploadKey} setFiles={onFileSelected} file={file} onRemove={onFileRemoved} />
             </div>
           </div>
 

@@ -21,6 +21,7 @@ import {
 import FormStep from "./FormStep"
 import ReviewStep from "./ReviewStep"
 import { CreateInterviewFormData, LanguageSelection } from "./types"
+import type { SavedResume } from "../_components/SavedResumePicker"
 import {
   DEFAULT_INTERVIEW_LANGUAGE,
   DEFAULT_FEEDBACK_LANGUAGE,
@@ -42,6 +43,10 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
   const router = useRouter()
   const [step, setStep] = useState<"form" | "review">("form")
   const [file, setFile] = useState<File | null>(null)
+  // A resume picked from the candidate's library - used instead of `file`.
+  const [savedResume, setSavedResume] = useState<SavedResume | null>(null)
+  // Bumped to reset the upload dropzone when a saved resume is picked instead.
+  const [resumeUploadKey, setResumeUploadKey] = useState(0)
   const [formData, setFormData] = useState<CreateInterviewFormData>({
     jobTitle: "",
     companyName: "",
@@ -62,14 +67,15 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
   }
 
   const isQnoValid = /^[1-9][0-9]*$/.test(String(formData.qno ?? ""))
-  const canProceed = !!formData.jobTitle.trim() && (!!file || !!formData.jobDescription.trim()) && isQnoValid
+  const hasResume = !!file || !!savedResume
+  const canProceed = !!formData.jobTitle.trim() && (hasResume || !!formData.jobDescription.trim()) && isQnoValid
 
   const onNext = () => {
     if (!canProceed) return
 
     // Resume present but no job description - nudge toward adding both for
     // more relevant questions, but let the candidate proceed with just the resume.
-    if (file && !formData.jobDescription.trim()) {
+    if (hasResume && !formData.jobDescription.trim()) {
       setFormNotice({
         type: "description-missing",
         message:
@@ -79,7 +85,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
     }
 
     // Job description present but no resume - same nudge, the other way around.
-    if (!file && formData.jobDescription.trim()) {
+    if (!hasResume && formData.jobDescription.trim()) {
       setFormNotice({
         type: "resume-missing",
         message:
@@ -95,6 +101,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
     setLoading(true)
     const formData_ = new FormData()
     if (file) formData_.append("file", file)
+    else if (savedResume) formData_.append("resumeId", savedResume.id)
     formData_.append("jobTitle", formData.jobTitle ?? "")
     formData_.append("companyName", formData.companyName ?? "")
     formData_.append("jobDescription", formData.jobDescription ?? "")
@@ -150,8 +157,20 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
             formData={formData}
             onHandleInputChange={onHandleInputChange}
             file={file}
-            onFileSelected={setFile}
+            onFileSelected={(selected) => {
+              setFile(selected)
+              setSavedResume(null)
+            }}
             onFileRemoved={() => setFile(null)}
+            savedResumeId={savedResume?.id ?? null}
+            onSavedResumeSelected={(resume) => {
+              setSavedResume(resume)
+              if (resume) {
+                setFile(null)
+                setResumeUploadKey((key) => key + 1)
+              }
+            }}
+            resumeUploadKey={resumeUploadKey}
             languages={languages}
             onLanguageChange={onLanguageChange}
             canProceed={canProceed}
@@ -162,6 +181,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
           <ReviewStep
             formData={formData}
             file={file}
+            savedResume={savedResume}
             languages={languages}
             loading={loading}
             interviewId={interviewId}

@@ -6,6 +6,7 @@ export const SaveInterviewQuestions = mutation({
         questions: v.any(),
         uid: v.id('UserTable'),
         resumeUrl: v.optional(v.string()),
+        resumeId: v.optional(v.id('ResumeTable')),
         resumeFileName: v.optional(v.string()),
         jobTitle: v.optional(v.string()),
         jobDescription: v.optional(v.string()),
@@ -19,6 +20,7 @@ export const SaveInterviewQuestions = mutation({
         const result = await ctx.db.insert('InterviewSessionTable', {
             interviewQuestion: args.questions,
             resumeUrl: args.resumeUrl,
+            resumeId: args.resumeId,
             resumeFileName: args.resumeFileName,
             jobTitle: args.jobTitle,
             jobDescription: args.jobDescription,

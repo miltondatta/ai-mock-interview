@@ -41,6 +41,7 @@ import { Id } from "@/convex/_generated/dataModel"
 import { cn } from "@/lib/utils"
 import { PRACTICE_QUESTIONS, FREE_PLAN_MAX_QUESTIONS } from "./questions"
 import { DEFAULT_PRACTICE_COACH_LANGUAGE, findLanguageOption, useLanguageOptions } from "../settings/languages"
+import SavedResumePicker, { type SavedResume } from "../_components/SavedResumePicker"
 
 // "Tell me about yourself" is pre-selected for every new session - it's the
 // de facto opener in almost any interview, so starting the candidate there
@@ -98,6 +99,10 @@ function Waveform({ active }: { active: boolean }) {
 function PracticeCoach() {
   const { userDetail } = useContext(UserDetailContext)
   const [resumeFile, setResumeFile] = useState<File | null>(null)
+  // A resume picked from the candidate's library - used instead of resumeFile.
+  const [savedResume, setSavedResume] = useState<SavedResume | null>(null)
+  // Bumped after a generation so the saved-resume list picks up a new upload.
+  const [savedResumesKey, setSavedResumesKey] = useState(0)
   const [jobTitle, setJobTitle] = useState("")
   const [jobDescription, setJobDescription] = useState("")
   // null until the candidate picks one here, so the dropdown follows the saved
@@ -167,7 +172,7 @@ function PracticeCoach() {
 
   // A resume alone, or a job title + description without a resume, is enough
   // to generate a script.
-  const canGenerate = !!resumeFile || (!!jobTitle.trim() && !!jobDescription.trim())
+  const canGenerate = !!resumeFile || !!savedResume || (!!jobTitle.trim() && !!jobDescription.trim())
 
   const runGeneration = async () => {
     if (!canGenerate || generating) return
@@ -175,6 +180,7 @@ function PracticeCoach() {
     try {
       const formData = new FormData()
       if (resumeFile) formData.append("file", resumeFile)
+      else if (savedResume) formData.append("resumeId", savedResume.id)
       formData.append("jobTitle", jobTitle)
       formData.append("jobDescription", jobDescription)
       formData.append("selectedQuestions", JSON.stringify(selectedQuestions))
@@ -193,6 +199,8 @@ function PracticeCoach() {
         // Clear the form so the candidate starts the next session fresh -
         // this also re-disables Generate Scripts until a resume is chosen again.
         setResumeFile(null)
+        setSavedResume(null)
+        setSavedResumesKey((key) => key + 1)
         setJobTitle("")
         setJobDescription("")
         setSelectedQuestions(DEFAULT_SELECTED_QUESTIONS)
@@ -221,12 +229,22 @@ function PracticeCoach() {
       return
     }
     setResumeFile(file)
+    setSavedResume(null)
+    advanceToQuestionsIfComplete(true)
+  }
+
+  const onSavedResumeSelected = (resume: SavedResume | null) => {
+    setSavedResume(resume)
+    if (!resume) return
+    // Picking a saved resume replaces any file dropped into the uploader.
+    setResumeFile(null)
+    setResumeUploadKey((key) => key + 1)
     advanceToQuestionsIfComplete(true)
   }
 
   // Once the resume, job title and job description are all in, bring the
   // candidate straight to the Practice Questions as the next step.
-  const advanceToQuestionsIfComplete = (hasResume = !!resumeFile) => {
+  const advanceToQuestionsIfComplete = (hasResume = !!resumeFile || !!savedResume) => {
     if (hasAdvancedToQuestionsRef.current) return
     if (!hasResume || !jobTitle.trim() || !jobDescription.trim()) return
     hasAdvancedToQuestionsRef.current = true
@@ -450,6 +468,12 @@ function PracticeCoach() {
                 <FileText className="size-4 text-primary" />
                 Upload Resume
               </label>
+              <SavedResumePicker
+                key={savedResumesKey}
+                selectedId={savedResume?.id ?? null}
+                onSelect={onSavedResumeSelected}
+                disabled={generating}
+              />
               <FileUpload
                 key={resumeUploadKey}
                 onChange={onResumeFileChange}

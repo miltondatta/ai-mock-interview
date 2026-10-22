@@ -11,6 +11,8 @@ import {
     QuestionTimelineEntry,
 } from "@/utils/practiceCoachAudio";
 import { sanitizeFreeText } from "@/utils/sanitizeText";
+import { addResumeToLibrary, getLibraryResume } from "@/utils/resumeLibrary";
+import type { Id } from "@/convex/_generated/dataModel";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -44,9 +46,11 @@ export async function POST(req: NextRequest) {
     // before it's sent.
     const jobTitle = sanitizeFreeText((formData.get("jobTitle") as string | null) ?? "");
     const jobDescription = sanitizeFreeText((formData.get("jobDescription") as string | null) ?? "");
+    // Set instead of `file` when the candidate picked a resume from their library.
+    const savedResumeId = (formData.get("resumeId") as string | null) ?? "";
     // Either a resume, or a job title + description on their own, is enough to
     // generate a script.
-    if (!file && (!jobTitle || !jobDescription)) {
+    if (!file && !savedResumeId && (!jobTitle || !jobDescription)) {
         return NextResponse.json(
             { error: "Please upload your resume or add a job title and job description." },
             { status: 400 }
@@ -69,17 +73,22 @@ export async function POST(req: NextRequest) {
             urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT as string,
         });
 
+        // A new upload goes into the candidate's resume library (reusing the
+        // existing entry if they've uploaded this exact file before); a resume
+        // picked from the library is resolved server-side after an ownership check.
         let resumeUrl: string | undefined;
+        let resumeId: Id<'ResumeTable'> | undefined;
         if (file) {
-            const bytes = await file.arrayBuffer();
-            const buffer = Buffer.from(bytes);
-
-            const uploadedFile = await imagekit.upload({
-                file: buffer,
-                fileName: Date.now().toString() + ".pdf",
-                isPublished: true,
-            });
-            resumeUrl = uploadedFile?.url;
+            const resume = await addResumeToLibrary(convexClient, convexUser._id, file);
+            resumeUrl = resume.fileUrl;
+            resumeId = resume.id;
+        } else if (savedResumeId) {
+            const resume = await getLibraryResume(convexClient, convexUser._id, savedResumeId);
+            if (!resume) {
+                return NextResponse.json({ error: "The selected resume could not be found." }, { status: 404 });
+            }
+            resumeUrl = resume.fileUrl;
+            resumeId = resume.id;
         }
 
         // N8N expects practice_questions as an object keyed "1", "2", ... rather
@@ -146,6 +155,7 @@ export async function POST(req: NextRequest) {
         await convexClient.mutation(api.PracticeCoach.SavePracticeCoachGeneration, {
             userId: convexUser._id,
             resumeUrl,
+            resumeId,
             jobTitle,
             jobDescription,
             selectedQuestions,

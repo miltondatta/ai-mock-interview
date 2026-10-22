@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { useInterviewModes } from "../_components/InterviewOptions"
 import { findLanguageOption, LanguageOption, useLanguageOptions } from "../settings/languages"
 import { CreateInterviewFormData, LanguageSelection } from "./types"
+import type { SavedResume } from "../_components/SavedResumePicker"
 
 function getLanguageLabel(options: LanguageOption[], value: string) {
   const option = findLanguageOption(options, value)
@@ -66,6 +67,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 interface ReviewStepProps {
   formData: CreateInterviewFormData
   file: File | null
+  savedResume: SavedResume | null
   languages: LanguageSelection
   loading: boolean
   interviewId: string | null
@@ -81,6 +83,7 @@ interface ReviewStepProps {
 function ReviewStep({
   formData,
   file,
+  savedResume,
   languages,
   loading,
   interviewId,
@@ -95,6 +98,12 @@ function ReviewStep({
   const interviewModes = useInterviewModes()
   const languageOptions = useLanguageOptions()
   const modeLabel = interviewModes.find((option) => option.value === formData.mode)?.label ?? formData.mode
+  // A newly uploaded file, or the resume picked from the candidate's library.
+  const resumeInfo = file
+    ? { name: file.name, size: file.size }
+    : savedResume
+      ? { name: savedResume.fileName, size: savedResume.fileSize }
+      : null
 
   return (
     <div className="flex flex-col gap-6">
@@ -102,7 +111,7 @@ function ReviewStep({
         <SectionCard icon={Briefcase} title="Job Information" onEdit={onEditJobInformation}>
           <Row label="Job Title" value={formData.jobTitle || "Not specified"} />
           <Row label="Company Name" value={formData.companyName || "Not specified"} />
-          {file && (
+          {resumeInfo && (
             <div>
               <span className="text-sm text-muted-foreground">Resume</span>
               <div className="mt-1.5 flex items-center gap-3 rounded-xl border border-border bg-muted/30 p-3">
@@ -110,8 +119,10 @@ function ReviewStep({
                   <FileText className="size-4.5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-foreground">{file.name}</p>
-                  <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} KB</p>
+                  <p className="truncate text-sm font-medium text-foreground">{resumeInfo.name}</p>
+                  {resumeInfo.size !== undefined && (
+                    <p className="text-xs text-muted-foreground">{(resumeInfo.size / 1024).toFixed(0)} KB</p>
+                  )}
                 </div>
                 <CheckCircle2 className="size-4 shrink-0 text-success" />
               </div>

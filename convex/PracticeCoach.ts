@@ -5,6 +5,7 @@ export const SavePracticeCoachGeneration = mutation({
     args: {
         userId: v.id('UserTable'),
         resumeUrl: v.optional(v.string()),
+        resumeId: v.optional(v.id('ResumeTable')),
         jobTitle: v.optional(v.string()),
         jobDescription: v.optional(v.string()),
         selectedQuestions: v.optional(v.array(v.string())),
@@ -19,6 +20,7 @@ export const SavePracticeCoachGeneration = mutation({
         const result = await ctx.db.insert('PracticeCoachTable', {
             userId: args.userId,
             resumeUrl: args.resumeUrl,
+            resumeId: args.resumeId,
             jobTitle: args.jobTitle,
             jobDescription: args.jobDescription,
             selectedQuestions: args.selectedQuestions,

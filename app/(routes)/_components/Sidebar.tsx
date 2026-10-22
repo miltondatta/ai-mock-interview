@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings, FileSearch } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
@@ -19,6 +19,11 @@ const MenuOptions = [
     name: "Dashboard",
     path: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    name: "Resume Match Analyzer",
+    path: "/resume-match-analyzer",
+    icon: FileSearch,
   },
   {
     name: "Practice Coach",
