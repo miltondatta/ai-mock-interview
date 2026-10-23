@@ -172,9 +172,9 @@ export default defineSchema({
       .index('by_user_hash', ['userId', 'contentHash'])
       .index('by_user_resume', ['userId', 'resumeId']),
 
-    // Resume Match Analyzer: one row per successful analysis. `analysis` is the
-    // normalized n8n response (utils/resumeMatchAnalysis.ts) - the extracted
-    // resume text is never stored.
+    // Resume Match Analyzer: one row per analysis the candidate chose to save.
+    // `analysis` is the normalized n8n response (utils/resumeMatchAnalysis.ts) -
+    // the extracted resume text is never stored.
     ResumeMatchAnalysisTable: defineTable({
       userId: v.id('UserTable'),
       // Resume reference as listed by GetUserResumes, e.g. "resume:<id>".
@@ -187,5 +187,6 @@ export default defineSchema({
       lang: v.string(),
       analysis: v.any(),
       createdAt: v.number(),
-    }),
+    })
+      .index('by_user', ['userId']),
 });

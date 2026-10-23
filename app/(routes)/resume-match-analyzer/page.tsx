@@ -1,6 +1,7 @@
 "use client"
 
-import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
+import React, { Suspense, useCallback, useContext, useEffect, useRef, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useQuery } from "convex/react"
 import { CircleAlert, Info, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -18,6 +19,8 @@ import AiRecommendationCard from "./AiRecommendationCard"
 import SkillComparisonTab from "./SkillComparisonTab"
 import DetailedAssessmentTab from "./DetailedAssessmentTab"
 import RecommendationsTab from "./RecommendationsTab"
+import SaveAnalysisBar, { type SaveState } from "./SaveAnalysisBar"
+import SavedAnalysisBanner from "./SavedAnalysisBanner"
 import { EmptyPanel, LoadingPanel, formatAnalysisDate, matchTone, type MatchTone } from "./shared"
 import {
   JOB_DESCRIPTION_MAX_LENGTH,
@@ -50,6 +53,17 @@ interface DisplayedAnalysis {
   createdAt: number
 }
 
+// What a fresh result was analyzed from - sent to /api/resume-match/save if
+// the candidate chooses to keep it.
+interface AnalysisSource {
+  resumeId: string
+  mode: JobInputMode
+  jobTitle: string
+  jobDescription: string
+  jobDescriptionUrl: string
+  lang: string
+}
+
 // Headline and summary sentence for the insight panel. Only describes what
 // n8n returned (its match level and the status of each requirement).
 function buildInsight(analysis: ResumeMatchAnalysis) {
@@ -77,13 +91,21 @@ function isHttpUrl(value: string) {
   }
 }
 
-function ResumeMatchAnalyzerPage() {
+function ResumeMatchAnalyzer() {
+  const router = useRouter()
+  // Set when a saved analysis is opened from the dashboard history.
+  const analysisId = useSearchParams().get("analysisId")
   const { userDetail } = useContext(UserDetailContext)
   const userId = userDetail?._id
   // Loaded through /api/resumes, which identifies the candidate
   // from their Clerk session - undefined while loading.
   const [resumes, setResumes] = useState<ResumeOption[] | undefined>(undefined)
-  const latestSaved = useQuery(api.ResumeMatch.GetLatestResumeMatchAnalysis, userId ? { userId } : "skip")
+  // Opening the screen starts empty - a saved analysis is only shown when it's
+  // picked from the dashboard history.
+  const viewedRecord = useQuery(
+    api.ResumeMatch.GetResumeMatchAnalysis,
+    userId && analysisId ? { userId, analysisId } : "skip"
+  )
 
   const [selectedResumeId, setSelectedResumeId] = useState<string | null>(null)
   const [jobInputMode, setJobInputMode] = useState<JobInputMode>("text")
@@ -96,9 +118,14 @@ function ResumeMatchAnalyzerPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [result, setResult] = useState<DisplayedAnalysis | null>(null)
-  // The candidate's last saved analysis is shown until they start a new one.
+  // A saved analysis opened from the history is shown until they start a new one.
   const [showSaved, setShowSaved] = useState(true)
+  const [resultSource, setResultSource] = useState<AnalysisSource | null>(null)
+  const [saveState, setSaveState] = useState<SaveState>("unsaved")
+  const [savedAnalysisId, setSavedAnalysisId] = useState<string | null>(null)
   const analyzingRef = useRef(false)
+  // The saved analysis whose resume/job description were loaded into the form.
+  const populatedIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!notice) return
@@ -133,11 +160,41 @@ function ResumeMatchAnalyzerPage() {
     }
   }, [resumes, selectedResumeId])
 
+  // Opening a saved analysis fills the form with the resume and job
+  // description it was created from.
+  useEffect(() => {
+    if (!viewedRecord || resumes === undefined || populatedIdRef.current === viewedRecord._id) return
+    populatedIdRef.current = viewedRecord._id
+    if (resumes.some((r) => r.id === viewedRecord.resumeId)) {
+      setSelectedResumeId(viewedRecord.resumeId)
+    }
+    setJobTitle(viewedRecord.jobTitle)
+    if (viewedRecord.jobDescriptionUrl) {
+      setJobInputMode("url")
+      setJobUrl(viewedRecord.jobDescriptionUrl)
+      setJobDescription("")
+    } else {
+      setJobInputMode("text")
+      setJobDescription(viewedRecord.jobDescription ?? "")
+      setJobUrl("")
+    }
+    setActiveTab("result")
+    setError(null)
+    setResult(null)
+    setResultSource(null)
+    setShowSaved(true)
+  }, [viewedRecord, resumes])
+
+  const savedDisplay = analysisId ? viewedRecord : null
   const displayed: DisplayedAnalysis | null =
     result ??
-    (showSaved && !isAnalyzing && latestSaved
-      ? { analysis: latestSaved.analysis as ResumeMatchAnalysis, createdAt: latestSaved.createdAt }
+    (showSaved && !isAnalyzing && savedDisplay
+      ? { analysis: savedDisplay.analysis as ResumeMatchAnalysis, createdAt: savedDisplay.createdAt }
       : null)
+  const isViewingRecord = !result && showSaved && !isAnalyzing && !!analysisId && !!viewedRecord
+  // A saved analysis opened from the history is view-only (including while it
+  // loads) until the candidate clicks New Analysis.
+  const viewMode = !!analysisId && showSaved && !result && viewedRecord !== null
 
   const resetForm = () => {
     if (analyzingRef.current) return
@@ -149,7 +206,9 @@ function ResumeMatchAnalyzerPage() {
     setActiveTab("result")
     setError(null)
     setResult(null)
+    setResultSource(null)
     setShowSaved(false)
+    if (analysisId) router.replace("/resume-match-analyzer")
   }
 
   const validate = (): string | null => {
@@ -183,22 +242,26 @@ function ResumeMatchAnalyzerPage() {
     setIsAnalyzing(true)
     setError(null)
     setResult(null)
+    setResultSource(null)
+    setSaveState("unsaved")
+    setSavedAnalysisId(null)
     setShowSaved(false)
     setActiveTab("result")
 
+    const source: Omit<AnalysisSource, "lang"> = {
+      resumeId: selectedResumeId!,
+      mode: jobInputMode,
+      jobTitle,
+      jobDescription: jobInputMode === "text" ? jobDescription : "",
+      jobDescriptionUrl: jobInputMode === "url" ? jobUrl.trim() : "",
+    }
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), ANALYZE_TIMEOUT_MS)
     try {
       const res = await fetch("/api/resume-match/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resumeId: selectedResumeId,
-          mode: jobInputMode,
-          jobTitle,
-          jobDescription: jobInputMode === "text" ? jobDescription : "",
-          jobDescriptionUrl: jobInputMode === "url" ? jobUrl.trim() : "",
-        }),
+        body: JSON.stringify(source),
         signal: controller.signal,
       })
       const data = await res.json().catch(() => null)
@@ -207,6 +270,7 @@ function ResumeMatchAnalyzerPage() {
         return
       }
       setResult({ analysis: data.analysis, createdAt: typeof data.createdAt === "number" ? data.createdAt : Date.now() })
+      setResultSource({ ...source, lang: typeof data.lang === "string" ? data.lang : "en" })
     } catch (e) {
       setError(
         e instanceof DOMException && e.name === "AbortError"
@@ -217,6 +281,29 @@ function ResumeMatchAnalyzerPage() {
       clearTimeout(timer)
       analyzingRef.current = false
       setIsAnalyzing(false)
+    }
+  }
+
+  const saveAnalysis = async () => {
+    if (!result || !resultSource || saveState !== "unsaved") return
+    setSaveState("saving")
+    try {
+      const res = await fetch("/api/resume-match/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...resultSource, analysis: result.analysis }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.analysisId) {
+        setSaveState("unsaved")
+        setNotice(data?.error ?? "Unable to save this analysis. Please try again.")
+        return
+      }
+      setSavedAnalysisId(data.analysisId)
+      setSaveState("saved")
+    } catch {
+      setSaveState("unsaved")
+      setNotice("Unable to save this analysis. Please check your connection and try again.")
     }
   }
 
@@ -292,7 +379,7 @@ function ResumeMatchAnalyzerPage() {
           onSelect={setSelectedResumeId}
           onUpload={uploadResume}
           isUploading={isUploading}
-          disabled={isAnalyzing}
+          disabled={isAnalyzing || viewMode}
           onMenuClick={() => setNotice(PLACEHOLDER_MESSAGES.resumeMenu)}
         />
         <JobDescriptionInput
@@ -306,6 +393,8 @@ function ResumeMatchAnalyzerPage() {
           onUrlChange={setJobUrl}
           onAnalyze={runAnalysis}
           isAnalyzing={isAnalyzing}
+          readOnly={viewMode}
+          canAnalyze={validate() === null}
         />
       </div>
 
@@ -317,6 +406,27 @@ function ResumeMatchAnalyzerPage() {
             <X className="size-4" />
           </button>
         </div>
+      )}
+
+      {result && resultSource && !isAnalyzing && (
+        <SaveAnalysisBar state={saveState} savedAnalysisId={savedAnalysisId} onSave={saveAnalysis} />
+      )}
+
+      {analysisId && viewedRecord === null && !result && (
+        <div role="status" className="mt-5 flex items-start gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0 text-primary" />
+          <p className="flex-1">This saved analysis could not be found. It may have been deleted.</p>
+        </div>
+      )}
+
+      {isViewingRecord && viewedRecord && (
+        <SavedAnalysisBanner
+          createdAt={viewedRecord.createdAt}
+          resumeId={viewedRecord.resumeId}
+          resumeFileName={viewedRecord.resumeFileName}
+          resumeAvailable={resumes?.some((r) => r.id === viewedRecord.resumeId) ?? false}
+          jobDescriptionUrl={viewedRecord.jobDescriptionUrl}
+        />
       )}
 
       <Tabs
@@ -412,6 +522,15 @@ function ResumeMatchAnalyzerPage() {
         )}
       </div>
     </div>
+  )
+}
+
+// useSearchParams needs a Suspense boundary so the page can still prerender.
+function ResumeMatchAnalyzerPage() {
+  return (
+    <Suspense fallback={null}>
+      <ResumeMatchAnalyzer />
+    </Suspense>
   )
 }
 

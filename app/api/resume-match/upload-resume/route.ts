@@ -8,8 +8,9 @@ const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 
-// Adds a resume from the Resume Match Analyzer to the candidate's resume
-// library. Re-uploading a file they already have returns the existing entry.
+// Adds a resume to the candidate's resume library - used by the Resume Match
+// Analyzer and Manage Resume. Re-uploading a file they already have returns
+// the existing entry.
 export async function POST(req: NextRequest) {
     const user = await currentUser();
     if (!user) {

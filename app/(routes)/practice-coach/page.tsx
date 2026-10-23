@@ -469,13 +469,13 @@ function PracticeCoach() {
                 Upload Resume
               </label>
               <SavedResumePicker
-                key={savedResumesKey}
+                key={`saved-resumes-${savedResumesKey}`}
                 selectedId={savedResume?.id ?? null}
                 onSelect={onSavedResumeSelected}
                 disabled={generating}
               />
               <FileUpload
-                key={resumeUploadKey}
+                key={`resume-upload-${resumeUploadKey}`}
                 onChange={onResumeFileChange}
                 onRemove={() => setResumeFile(null)}
               />

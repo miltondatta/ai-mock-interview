@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { ArrowRight, Briefcase, FileText, Globe, Mic, SlidersHorizontal, UploadCloud } from "lucide-react"
+import { ArrowRight, Briefcase, CircleAlert, FileText, Globe, Mic, SlidersHorizontal, UploadCloud } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,8 @@ interface FormStepProps {
   languages: LanguageSelection
   onLanguageChange: (field: keyof LanguageSelection, value: string) => void
   canProceed: boolean
+  // What still has to be filled in before Next is enabled.
+  missingRequirements: string[]
   onNext: () => void
   onCancel: () => void
 }
@@ -41,6 +43,7 @@ function FormStep({
   languages,
   onLanguageChange,
   canProceed,
+  missingRequirements,
   onNext,
   onCancel,
 }: FormStepProps) {
@@ -171,7 +174,13 @@ function FormStep({
         </div>
       </div>
 
-      <div className="flex items-center justify-end gap-3 border-t border-border pt-5">
+      <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border pt-5">
+        {!canProceed && missingRequirements.length > 0 && (
+          <p role="status" className="mr-auto flex items-center gap-1.5 text-sm text-muted-foreground">
+            <CircleAlert className="size-4 shrink-0 text-primary" />
+            To continue: {missingRequirements.join(" · ")}
+          </p>
+        )}
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>

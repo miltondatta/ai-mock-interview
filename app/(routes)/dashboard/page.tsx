@@ -5,6 +5,7 @@ import React, { useContext } from 'react'
 import Link from 'next/link'
 import EmptyState from './EmptyState';
 import InterviewCard from './InterviewCard';
+import ResumeMatchHistory from './ResumeMatchHistory';
 import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
 import { useQuery } from 'convex/react';
@@ -17,6 +18,10 @@ function Dashboard() {
 
   const interviewList = useQuery(
     api.Interview.GetUserInterviews,
+    userDetail?._id ? { userId: userDetail._id } : "skip"
+  );
+  const resumeMatchList = useQuery(
+    api.ResumeMatch.GetUserResumeMatchAnalyses,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   );
 
@@ -49,6 +54,8 @@ function Dashboard() {
           </div>
         </>
       )}
+
+      {resumeMatchList && <ResumeMatchHistory items={resumeMatchList} />}
     </div>
   )
 }

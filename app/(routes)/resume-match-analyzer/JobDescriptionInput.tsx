@@ -21,6 +21,10 @@ interface JobDescriptionInputProps {
   onUrlChange: (value: string) => void
   onAnalyze: () => void
   isAnalyzing: boolean
+  // Viewing a saved analysis - everything is shown but can't be changed.
+  readOnly: boolean
+  // Resume selected and job details complete - enables Analyze Match.
+  canAnalyze: boolean
 }
 
 function JobDescriptionInput({
@@ -34,7 +38,10 @@ function JobDescriptionInput({
   onUrlChange,
   onAnalyze,
   isAnalyzing,
+  readOnly,
+  canAnalyze,
 }: JobDescriptionInputProps) {
+  const locked = isAnalyzing || readOnly
   return (
     <Panel className="flex flex-col">
       <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -51,7 +58,7 @@ function JobDescriptionInput({
         id="job-title"
         value={jobTitle}
         maxLength={JOB_TITLE_MAX_LENGTH}
-        disabled={isAnalyzing}
+        disabled={locked}
         onChange={(e) => onJobTitleChange(e.target.value)}
         placeholder="Job title, e.g. Senior Technical Project Manager"
         className="mt-4 h-9"
@@ -66,7 +73,7 @@ function JobDescriptionInput({
             id="job-description"
             value={description}
             maxLength={JOB_DESCRIPTION_MAX_LENGTH}
-            disabled={isAnalyzing}
+            disabled={locked}
             onChange={(e) => onDescriptionChange(e.target.value)}
             placeholder="Paste the full job description here..."
             className="field-sizing-fixed h-40 resize-y"
@@ -84,7 +91,7 @@ function JobDescriptionInput({
             id="job-url"
             type="url"
             value={url}
-            disabled={isAnalyzing}
+            disabled={locked}
             onChange={(e) => onUrlChange(e.target.value)}
             placeholder="https://example.com/jobs/senior-technical-project-manager"
             className="h-9"
@@ -99,7 +106,7 @@ function JobDescriptionInput({
         <Button
           variant="link"
           className="h-auto justify-start px-0"
-          disabled={isAnalyzing}
+          disabled={locked}
           onClick={() => onModeChange(mode === "text" ? "url" : "text")}
         >
           {mode === "text" ? (
@@ -114,7 +121,7 @@ function JobDescriptionInput({
             </>
           )}
         </Button>
-        <Button size="lg" className="px-4" disabled={isAnalyzing} onClick={onAnalyze}>
+        <Button size="lg" className="px-4" disabled={locked || !canAnalyze} onClick={onAnalyze}>
           {isAnalyzing ? <Loader2 className="animate-spin" /> : <Sparkles />}
           {isAnalyzing ? "Analyzing…" : "Analyze Match"}
         </Button>

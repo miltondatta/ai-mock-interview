@@ -165,26 +165,7 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // Persisting is best-effort: the candidate still gets the result they waited for.
-    let analysisId: string | null = null;
-    let createdAt = Date.now();
-    try {
-        const saved = await convexClient.mutation(api.ResumeMatch.SaveResumeMatchAnalysis, {
-            userId: convexUser._id,
-            resumeId,
-            resumeUrl: resume.fileUrl,
-            resumeFileName: resume.fileName,
-            jobTitle,
-            jobDescription: jobDescription || undefined,
-            jobDescriptionUrl: jobDescriptionUrl || undefined,
-            lang,
-            analysis,
-        });
-        analysisId = saved.id;
-        createdAt = saved.createdAt;
-    } catch (e) {
-        console.error("Failed to save resume match analysis:", e instanceof Error ? e.message : e);
-    }
-
-    return NextResponse.json({ analysis, analysisId, createdAt, resumeFileName: resume.fileName });
+    // Nothing is stored here - the candidate decides whether to keep the
+    // result, and app/api/resume-match/save records it when they do.
+    return NextResponse.json({ analysis, createdAt: Date.now(), resumeFileName: resume.fileName, lang });
 }

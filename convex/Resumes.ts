@@ -145,6 +145,142 @@ export const AddUserResume = mutation({
     }
 });
 
+// --- Deleting a resume (Manage Resume) ------------------------------------
+//
+// Deleting removes the candidate's mappings and the ResumeTable rows behind
+// them. It's refused while saved match analyses still use the resume - the
+// candidate deletes that history first. Copies of the same file
+// (same contentHash) are hidden by GetUserResumes, so they go too - otherwise
+// a duplicate would reappear in the list. Interview and Practice Coach records
+// are kept; they only keep the old reference.
+
+export interface ResumeFileToDelete {
+    fileUrl: string;
+    imagekitFileId?: string;
+}
+
+interface ResumeDeletion {
+    fileName: string;
+    mappingIds: Id<'UserResumeTable'>[];
+    rowIds: Id<'ResumeTable'>[];
+    analyses: { _id: Id<'ResumeMatchAnalysisTable'>; jobTitle: string; createdAt: number }[];
+    files: ResumeFileToDelete[];
+}
+
+async function planResumeDeletion(ctx: QueryCtx, userId: Id<'UserTable'>, resumeId: string): Promise<ResumeDeletion | null> {
+    const resume = await getOwnedResume(ctx, userId, resumeId);
+    if (!resume) return null;
+    const hash = resume.contentHash;
+
+    const mappings = (await ctx.db
+        .query('UserResumeTable')
+        .withIndex('by_user', q => q.eq('userId', userId))
+        .collect())
+        .filter(m => m.resumeId === resume._id || (hash !== undefined && m.contentHash === hash));
+
+    const targetIds = new Set<Id<'ResumeTable'>>([resume._id, ...mappings.map(m => m.resumeId)]);
+    if (hash) {
+        // Legacy duplicates left unmapped by LinkLegacyResume.
+        const legacyCopies = await ctx.db
+            .query('ResumeTable')
+            .filter(q => q.and(q.eq(q.field('userId'), userId), q.eq(q.field('contentHash'), hash)))
+            .collect();
+        for (const row of legacyCopies) targetIds.add(row._id);
+    }
+
+    const rowIds: Id<'ResumeTable'>[] = [];
+    const rows: Doc<'ResumeTable'>[] = [];
+    for (const id of targetIds) {
+        // Never remove a row another candidate still uses.
+        const otherOwner = await ctx.db
+            .query('UserResumeTable')
+            .filter(q => q.and(q.eq(q.field('resumeId'), id), q.neq(q.field('userId'), userId)))
+            .first();
+        if (otherOwner) continue;
+        const row = await ctx.db.get(id);
+        if (!row) continue;
+        rowIds.push(id);
+        rows.push(row);
+    }
+
+    const files: ResumeFileToDelete[] = [];
+    const seenUrls = new Set<string>();
+    for (const row of rows) {
+        if (seenUrls.has(row.fileUrl)) continue;
+        seenUrls.add(row.fileUrl);
+        // Keep the file if a row that isn't being deleted still points at it.
+        const stillUsed = (await ctx.db
+            .query('ResumeTable')
+            .filter(q => q.eq(q.field('fileUrl'), row.fileUrl))
+            .collect())
+            .some(other => !rowIds.includes(other._id));
+        if (stillUsed) continue;
+        files.push({ fileUrl: row.fileUrl, imagekitFileId: row.imagekitFileId });
+    }
+
+    const analyses = (await ctx.db
+        .query('ResumeMatchAnalysisTable')
+        .withIndex('by_user', q => q.eq('userId', userId))
+        .collect())
+        .filter(a => {
+            const id = ctx.db.normalizeId('ResumeTable', a.resumeId);
+            return id !== null && targetIds.has(id);
+        })
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(a => ({ _id: a._id, jobTitle: a.jobTitle, createdAt: a.createdAt }));
+
+    return {
+        fileName: resume.fileName,
+        mappingIds: mappings.map(m => m._id),
+        rowIds,
+        analyses,
+        files,
+    };
+}
+
+// What deleting would remove - the delete route clears these files from
+// ImageKit before the records are removed. Null when the resume isn't theirs.
+export const GetResumeDeletionPlan = query({
+    args: {
+        userId: v.id('UserTable'),
+        resumeId: v.string(),
+    },
+    handler: async (ctx, args): Promise<{ fileName: string; files: ResumeFileToDelete[]; analysisCount: number } | null> => {
+        const plan = await planResumeDeletion(ctx, args.userId, args.resumeId);
+        if (!plan) return null;
+        return { fileName: plan.fileName, files: plan.files, analysisCount: plan.analyses.length };
+    }
+});
+
+// Saved match analyses that used this resume. A resume can't be deleted while
+// any exist - the delete dialog lists them so the candidate can remove that
+// history first.
+export const GetResumeRelatedAnalyses = query({
+    args: {
+        userId: v.id('UserTable'),
+        resumeId: v.string(),
+    },
+    handler: async (ctx, args) => {
+        const plan = await planResumeDeletion(ctx, args.userId, args.resumeId);
+        return plan?.analyses ?? [];
+    }
+});
+
+export const DeleteUserResume = mutation({
+    args: {
+        userId: v.id('UserTable'),
+        resumeId: v.string(),
+    },
+    handler: async (ctx, args): Promise<{ deleted: boolean; analysisCount: number }> => {
+        const plan = await planResumeDeletion(ctx, args.userId, args.resumeId);
+        if (!plan) return { deleted: false, analysisCount: 0 };
+        if (plan.analyses.length > 0) return { deleted: false, analysisCount: plan.analyses.length };
+        for (const id of plan.mappingIds) await ctx.db.delete(id);
+        for (const id of plan.rowIds) await ctx.db.delete(id);
+        return { deleted: true, analysisCount: 0 };
+    }
+});
+
 // --- One-time import of resumes uploaded before the resume library ---------
 //
 // Run once after deploying:  npx convex run Resumes:ImportLegacyResumes

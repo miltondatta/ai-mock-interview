@@ -97,6 +97,7 @@ function ResumeSelector({ resumes, selectedId, onSelect, onUpload, isUploading, 
                   variant="ghost"
                   size="icon-sm"
                   aria-label={`More actions for ${resume.fileName}`}
+                  disabled={disabled}
                   onClick={onMenuClick}
                 >
                   <EllipsisVertical />

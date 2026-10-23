@@ -69,6 +69,12 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
   const isQnoValid = /^[1-9][0-9]*$/.test(String(formData.qno ?? ""))
   const hasResume = !!file || !!savedResume
   const canProceed = !!formData.jobTitle.trim() && (hasResume || !!formData.jobDescription.trim()) && isQnoValid
+  // Shown next to the disabled Next button so it's clear what's still needed.
+  const missingRequirements = [
+    !formData.jobTitle.trim() && "Enter the Job Title",
+    !hasResume && !formData.jobDescription.trim() && "Select or upload a resume, or add a job description",
+    !isQnoValid && "Choose a valid number of questions",
+  ].filter((item): item is string => !!item)
 
   const onNext = () => {
     if (!canProceed) return
@@ -174,6 +180,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
             languages={languages}
             onLanguageChange={onLanguageChange}
             canProceed={canProceed}
+            missingRequirements={missingRequirements}
             onNext={onNext}
             onCancel={onCancel}
           />
@@ -254,7 +261,11 @@ function CreateInterviewPage() {
       initialPreferences={{
         mode: settings?.defaultInterviewMode ?? DEFAULT_INTERVIEW_MODE,
         level: settings?.defaultInterviewLevel ?? DEFAULT_INTERVIEW_LEVEL,
-        qno: settings?.defaultQuestionCount ?? DEFAULT_QUESTION_COUNT,
+        // A saved count that isn't a positive whole number (e.g. an empty custom
+        // value) would keep Next disabled, so fall back to the default.
+        qno: /^[1-9][0-9]*$/.test(settings?.defaultQuestionCount ?? "")
+          ? settings!.defaultQuestionCount!
+          : DEFAULT_QUESTION_COUNT,
       }}
     />
   )
