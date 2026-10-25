@@ -89,7 +89,7 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
             {isCompleted ? 'Complete' : 'Draft'}
           </Badge>
           <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-            <DialogTrigger render={<Button variant='ghost' size='icon-sm' className='text-muted-foreground hover:text-destructive' />}>
+            <DialogTrigger render={(props) => <Button {...props} variant='ghost' size='icon-sm' className='text-muted-foreground hover:text-destructive' />}>
               <Trash2 className='size-4' />
               <span className='sr-only'>Delete interview</span>
             </DialogTrigger>
@@ -101,7 +101,10 @@ function InterviewCard({ interview }: { interview: Doc<'InterviewSessionTable'> 
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>
-                <DialogClose render={<Button variant='outline' />} disabled={deleting}>
+                <DialogClose
+                  disabled={deleting}
+                  render={(props) => <Button {...props} variant='outline' />}
+                >
                   Cancel
                 </DialogClose>
                 <Button variant='destructive' onClick={onDeleteInterview} disabled={deleting}>

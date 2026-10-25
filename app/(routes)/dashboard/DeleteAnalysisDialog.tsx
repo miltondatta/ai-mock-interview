@@ -122,7 +122,10 @@ function DeleteAnalysisDialog({ analysis, deleting, error, onOpenChange, onConfi
         </div>
 
         <DialogFooter className="mx-0 mb-0">
-          <DialogClose render={<Button variant="outline" />} disabled={deleting}>
+          <DialogClose
+            disabled={deleting}
+            render={(props) => <Button {...props} variant="outline" />}
+          >
             Cancel
           </DialogClose>
           <Button onClick={onConfirm} disabled={deleting}>

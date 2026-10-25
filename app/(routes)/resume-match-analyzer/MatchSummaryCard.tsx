@@ -40,7 +40,7 @@ function MatchSummaryCard({ jobTitle, analysisDate, matchLevel, matchLevelVarian
           {keyStrengths.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {keyStrengths.map((skill) => (
-                <Badge key={skill} variant="success" className="max-w-full truncate">{skill}</Badge>
+                <Badge key={skill} variant="success" className="h-auto max-w-full whitespace-normal break-words text-left">{skill}</Badge>
               ))}
             </div>
           ) : (
@@ -51,7 +51,7 @@ function MatchSummaryCard({ jobTitle, analysisDate, matchLevel, matchLevelVarian
           {mainGaps.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {mainGaps.map((skill) => (
-                <Badge key={skill} variant="default" className="max-w-full truncate">{skill}</Badge>
+                <Badge key={skill} variant="default" className="h-auto max-w-full whitespace-normal break-words text-left">{skill}</Badge>
               ))}
             </div>
           ) : (

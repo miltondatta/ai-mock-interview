@@ -21,6 +21,7 @@ import DetailedAssessmentTab from "./DetailedAssessmentTab"
 import RecommendationsTab from "./RecommendationsTab"
 import SaveAnalysisBar, { type SaveState } from "./SaveAnalysisBar"
 import SavedAnalysisBanner from "./SavedAnalysisBanner"
+import { downloadResumeMatchReport } from "./downloadReport"
 import { EmptyPanel, LoadingPanel, formatAnalysisDate, matchTone, type MatchTone } from "./shared"
 import {
   JOB_DESCRIPTION_MAX_LENGTH,
@@ -123,6 +124,7 @@ function ResumeMatchAnalyzer() {
   const [resultSource, setResultSource] = useState<AnalysisSource | null>(null)
   const [saveState, setSaveState] = useState<SaveState>("unsaved")
   const [savedAnalysisId, setSavedAnalysisId] = useState<string | null>(null)
+  const [isStartingInterview, setIsStartingInterview] = useState(false)
   const analyzingRef = useRef(false)
   // The saved analysis whose resume/job description were loaded into the form.
   const populatedIdRef = useRef<string | null>(null)
@@ -307,6 +309,57 @@ function ResumeMatchAnalyzer() {
     }
   }
 
+  // Starts a new interview seeded from this analysis's resume and job
+  // description, nudged toward the gaps n8n identified - reuses the same
+  // generation endpoint Create Interview uses, skipping its form since
+  // everything it needs was already supplied for the analysis.
+  const startTargetedInterview = async (analysis: ResumeMatchAnalysis) => {
+    if (isStartingInterview) return
+    const resumeId = resultSource?.resumeId ?? (isViewingRecord ? viewedRecord?.resumeId : undefined)
+    if (!resumeId) {
+      setNotice("Select a resume and run an analysis before starting a targeted interview.")
+      return
+    }
+    setIsStartingInterview(true)
+    try {
+      const baseDescription =
+        (resultSource?.jobDescription || (isViewingRecord ? viewedRecord?.jobDescription : "")) ?? ""
+      const focusNote =
+        analysis.interviewFocusAreas.length > 0
+          ? `\n\nFocus this interview especially on these gaps identified in the candidate's resume match analysis: ${analysis.interviewFocusAreas.join("; ")}.`
+          : ""
+      const lang = analysis.lang || "en"
+
+      const formData = new FormData()
+      formData.append("resumeId", resumeId)
+      formData.append("jobTitle", analysis.jobTitle)
+      if (analysis.companyName) formData.append("companyName", analysis.companyName)
+      formData.append("jobDescription", `${baseDescription}${focusNote}`.trim())
+      formData.append("mode", "technical")
+      formData.append("level", "basic")
+      formData.append("qno", "5")
+      formData.append("lang", lang)
+      formData.append("feedbackLang", lang)
+
+      const res = await fetch("/api/generate-interview-questions", { method: "POST", body: formData })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.interviewId) {
+        setNotice(data?.error ?? "Unable to start the targeted interview. Please try again.")
+        return
+      }
+      router.push(`/interview/${data.interviewId}/start`)
+    } catch {
+      setNotice("Unable to start the targeted interview. Please check your connection and try again.")
+    } finally {
+      setIsStartingInterview(false)
+    }
+  }
+
+  const handleDownloadReport = (analysis: ResumeMatchAnalysis, createdAt: number) => {
+    const opened = downloadResumeMatchReport(analysis, formatAnalysisDate(createdAt))
+    if (!opened) setNotice("Please allow pop-ups for this site to download the report.")
+  }
+
   const uploadResume = async (file: File) => {
     const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
     if (!isPdf) {
@@ -481,8 +534,8 @@ function ResumeMatchAnalyzer() {
                   />
                   <AiRecommendationCard
                     recommendation={analysis.recommendations[0] ?? null}
-                    onStartMockInterview={() => setNotice(PLACEHOLDER_MESSAGES.mockInterview)}
-                    onDownloadReport={() => setNotice(PLACEHOLDER_MESSAGES.downloadReport)}
+                    onStartMockInterview={() => startTargetedInterview(analysis)}
+                    onDownloadReport={() => handleDownloadReport(analysis, createdAt)}
                   />
                 </div>
               </div>

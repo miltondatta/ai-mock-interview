@@ -10,7 +10,5 @@ export const JOB_DESCRIPTION_MIN_LENGTH = 100
 export const JOB_DESCRIPTION_MAX_LENGTH = 10000
 
 export const PLACEHOLDER_MESSAGES = {
-  mockInterview: "Targeted mock interview integration will be implemented in a later phase. No interview was created.",
-  downloadReport: "Report generation will be implemented in a later phase. No file was downloaded.",
   resumeMenu: "Resume actions will be available in a later phase.",
 }

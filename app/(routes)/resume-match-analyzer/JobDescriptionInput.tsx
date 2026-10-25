@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { Briefcase, Link2, Loader2, Sparkles, FileText } from "lucide-react"
+import { Briefcase, Link2, Loader2, Sparkles, FileText, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -96,9 +96,12 @@ function JobDescriptionInput({
             placeholder="https://example.com/jobs/senior-technical-project-manager"
             className="h-9"
           />
-          <p className="text-xs text-muted-foreground">
-            The job posting is read during analysis. If the page can&apos;t be read, paste the description instead.
-          </p>
+          <div className="flex items-start gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs text-foreground">
+            <Zap className="mt-0.5 size-3.5 shrink-0 text-primary" />
+            <p className="font-bold text-success">
+              For faster and more reliable results, paste the full job description into the input box below instead of providing a URL. Job links may not be accessible for analysis, which can delay or prevent accurate resume matching.
+            </p>
+          </div>
         </div>
       )}
 
