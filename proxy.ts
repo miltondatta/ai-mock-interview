@@ -1,13 +1,16 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 
-// Everything except the landing page, Clerk's own auth pages, the separately
-// (non-Clerk) authenticated admin panel, and the external Tavus webhook
-// requires a signed-in Clerk session - signed-out visitors get bounced to
-// sign-in instead of being able to reach any in-app page or data route.
+// Everything except the landing page, Clerk's own auth pages, the legal
+// pages linked from the landing page footer, the separately (non-Clerk)
+// authenticated admin panel, and the external Tavus webhook requires a
+// signed-in Clerk session - signed-out visitors get bounced to sign-in
+// instead of being able to reach any in-app page or data route.
 const isPublicRoute = createRouteMatcher([
   '/',
   '/sign-in(.*)',
   '/sign-up(.*)',
+  '/privacy(.*)',
+  '/terms(.*)',
   '/__clerk(.*)',
   '/admin(.*)',
   '/api/admin(.*)',
