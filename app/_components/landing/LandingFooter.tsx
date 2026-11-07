@@ -1,21 +1,21 @@
 import Link from "next/link";
 
 const PRODUCT_LINKS = [
-  { label: "Features", href: "#features" },
-  { label: "Interview Modes", href: "#modes" },
+  { label: "Features", href: "/#features" },
+  { label: "Interview Modes", href: "/#modes" },
   { label: "Pricing", href: "/upgrade" },
   { label: "Get Started", href: "/dashboard" },
 ];
 
 const RESOURCE_LINKS = [
   { label: "How It Works", href: "/how-it-works" },
-  { label: "FAQ", href: "#faq" },
-  { label: "Help / Support", href: "#contact" },
+  { label: "FAQ", href: "/#faq" },
+  { label: "Help / Support", href: "/#contact" },
 ];
 
 const COMPANY_LINKS = [
-  { label: "About Us", href: "#about" },
-  { label: "Contact", href: "#contact" },
+  { label: "About Us", href: "/#about" },
+  { label: "Contact", href: "/#contact" },
   { label: "Privacy Policy", href: "/privacy" },
   { label: "Terms of Service", href: "/terms" },
 ];
@@ -78,10 +78,10 @@ export default function LandingFooter() {
       <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-4 lg:gap-8">
           <div className="lg:col-span-1">
-            <a href="#home" className="flex items-center gap-2.5">
+            <Link href="/#home" className="flex items-center gap-2.5">
               <img src="/logo.svg" alt="AI Mock Interview logo" className="h-8 w-8" />
               <span className="text-base font-bold text-white">AI Mock Interview</span>
-            </a>
+            </Link>
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-white/50">
               AI-powered interview preparation to help you practice, improve and land your dream job.
             </p>

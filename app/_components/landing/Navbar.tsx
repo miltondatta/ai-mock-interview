@@ -6,12 +6,12 @@ import { Menu, X, LayoutDashboard } from "lucide-react";
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 
 const NAV_LINKS = [
-  { label: "Home", href: "#home" },
-  { label: "Features", href: "#features" },
-  { label: "Interview Modes", href: "#modes" },
-  { label: "How It Works", href: "#how-it-works" },
-  { label: "Pricing", href: "#pricing" },
-  { label: "About", href: "#about" },
+  { label: "Home", href: "/#home" },
+  { label: "Features", href: "/#features" },
+  { label: "Interview Modes", href: "/#modes" },
+  { label: "How It Works", href: "/#how-it-works" },
+  { label: "Pricing", href: "/#pricing" },
+  { label: "About", href: "/#about" },
 ];
 
 export default function Navbar() {
@@ -34,12 +34,12 @@ export default function Navbar() {
       }`}
     >
       <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <a href="#home" className="flex shrink-0 items-center gap-2.5">
+        <Link href="/#home" className="flex shrink-0 items-center gap-2.5">
           <img src="/logo.svg" alt="AI Mock Interview logo" className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight text-stone-900 sm:text-lg">
             AI Mock Interview
           </span>
-        </a>
+        </Link>
 
         <div className="hidden items-center gap-1 lg:flex">
           {NAV_LINKS.map((link) => (
