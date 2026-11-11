@@ -18,6 +18,21 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
         period: DAY,
         capacity: 20,
     },
+    // AI Question Bank - one Gemini call per collection generation.
+    questionBankGenerate: {
+        kind: "token bucket",
+        rate: 15,
+        period: DAY,
+        capacity: 15,
+    },
+    // AI Question Bank - one Gemini call per on-demand answer generation
+    // (re-expanding an already-generated answer never consumes this).
+    questionBankAnswer: {
+        kind: "token bucket",
+        rate: 60,
+        period: DAY,
+        capacity: 60,
+    },
 });
 
 export const consumeResumeMatchAnalysis = mutation({
@@ -38,5 +53,23 @@ export const consumeGenerateInterviewQuestions = mutation({
             key: userId,
             count: 5,
         });
+    },
+});
+
+export const consumeQuestionBankGenerate = mutation({
+    args: {
+        userId: v.string(),
+    },
+    handler: async (ctx, { userId }) => {
+        return await rateLimiter.limit(ctx, "questionBankGenerate", { key: userId });
+    },
+});
+
+export const consumeQuestionBankAnswer = mutation({
+    args: {
+        userId: v.string(),
+    },
+    handler: async (ctx, { userId }) => {
+        return await rateLimiter.limit(ctx, "questionBankAnswer", { key: userId });
     },
 });

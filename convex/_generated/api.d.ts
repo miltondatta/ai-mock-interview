@@ -12,6 +12,7 @@ import type * as Interview from "../Interview.js";
 import type * as InterviewModes from "../InterviewModes.js";
 import type * as Languages from "../Languages.js";
 import type * as PracticeCoach from "../PracticeCoach.js";
+import type * as QuestionBank from "../QuestionBank.js";
 import type * as ResumeMatch from "../ResumeMatch.js";
 import type * as Resumes from "../Resumes.js";
 import type * as UserProfile from "../UserProfile.js";
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   InterviewModes: typeof InterviewModes;
   Languages: typeof Languages;
   PracticeCoach: typeof PracticeCoach;
+  QuestionBank: typeof QuestionBank;
   ResumeMatch: typeof ResumeMatch;
   Resumes: typeof Resumes;
   UserProfile: typeof UserProfile;

@@ -189,4 +189,67 @@ export default defineSchema({
       createdAt: v.number(),
     })
       .index('by_user', ['userId']),
+
+    // --- AI Question Bank (app/(routes)/question-bank) -----------------------
+    // Independent module: a "collection" is one Generate click (a Skill or Job
+    // topic set), holding its questions; each question's detailed answer is
+    // generated on demand (see convex/QuestionBank.ts) and cached here so
+    // re-expanding a question never re-calls the LLM.
+    questionBankCollections: defineTable({
+      userId: v.id('UserTable'),
+      title: v.string(),
+      generationMode: v.union(v.literal('skill'), v.literal('job')),
+      topics: v.array(v.string()),
+      jobTitle: v.optional(v.string()),
+      jobDescription: v.optional(v.string()),
+      totalQuestions: v.number(),
+      beginnerCount: v.number(),
+      intermediateCount: v.number(),
+      advancedCount: v.number(),
+      language: v.string(),
+      generationStatus: v.union(v.literal('ready'), v.literal('failed')),
+      isShared: v.boolean(),
+      shareToken: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_shareToken', ['shareToken']),
+
+    questionBankQuestions: defineTable({
+      collectionId: v.id('questionBankCollections'),
+      question: v.string(),
+      difficulty: v.union(v.literal('beginner'), v.literal('intermediate'), v.literal('advanced')),
+      order: v.number(),
+      answerStatus: v.union(v.literal('idle'), v.literal('generating'), v.literal('ready'), v.literal('error')),
+      createdAt: v.number(),
+    })
+      .index('by_collection', ['collectionId'])
+      .index('by_collection_order', ['collectionId', 'order']),
+
+    questionBankAnswers: defineTable({
+      questionId: v.id('questionBankQuestions'),
+      collectionId: v.id('questionBankCollections'),
+      // Rich-text answer as GFM markdown (rendered client-side with
+      // react-markdown; raw HTML is never parsed, so this can't inject markup).
+      structuredAnswer: v.string(),
+      generatedAt: v.number(),
+      modelMetadata: v.optional(v.any()),
+    })
+      .index('by_question', ['questionId'])
+      .index('by_collection', ['collectionId']),
+
+    questionBankGenerationLogs: defineTable({
+      userId: v.id('UserTable'),
+      collectionId: v.optional(v.id('questionBankCollections')),
+      questionId: v.optional(v.id('questionBankQuestions')),
+      kind: v.union(v.literal('questions'), v.literal('answer')),
+      model: v.string(),
+      usageMetadata: v.optional(v.any()),
+      generationStatus: v.union(v.literal('success'), v.literal('failed')),
+      error: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_collection', ['collectionId']),
 });
