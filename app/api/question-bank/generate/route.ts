@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ collectionId });
     } catch (e) {
-        console.error("Question Bank generation failed:", e);
+        console.error("Question Bank generation failed:", e instanceof Error ? e.message : e);
         await convexClient.mutation(api.QuestionBank.LogGeneration, {
             userId: convexUser._id,
             kind: "questions",

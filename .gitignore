@@ -49,3 +49,4 @@ docker*
 # Stage 1 MagicPath design reference — fully ported into app/_components/landing/,
 # not part of the build (excluded in tsconfig.json), kept locally only
 /design/
+vlc-help.txt

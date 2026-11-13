@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ answer: result.markdown });
     } catch (e) {
-        console.error("Question Bank answer generation failed:", e);
+        console.error("Question Bank answer generation failed:", e instanceof Error ? e.message : e);
         await convexClient.mutation(api.QuestionBank.MarkAnswerFailed, { questionId });
         await convexClient.mutation(api.QuestionBank.LogGeneration, {
             userId: convexUser._id,

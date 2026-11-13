@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings, FileSearch, FolderOpen, BookOpen } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings, FileSearch, FolderOpen, BookOpen, GraduationCap } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
@@ -19,6 +19,11 @@ const MenuOptions = [
     name: "Dashboard",
     path: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    name: "Study Planner",
+    path: "/study-planner",
+    icon: GraduationCap,
   },
   {
     name: "Resume Match Analyzer",

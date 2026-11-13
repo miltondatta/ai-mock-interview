@@ -252,4 +252,132 @@ export default defineSchema({
     })
       .index('by_user', ['userId'])
       .index('by_collection', ['collectionId']),
+
+    // --- Study Planner (app/(routes)/study-planner) --------------------------
+    // Independent module - does not depend on Interview, Question Bank or any
+    // future AI Study Room feature. M1 shipped this schema plus read-only
+    // dashboard queries; M2 adds AI/manual creation (convex/StudyPlanner.ts
+    // CreateStudyPlan) and the fields below it needs. Editing mutations for
+    // an existing plan still land in M3.
+    // One row per plan a candidate is working through (e.g. "Learn Python in
+    // 30 Days"). `progress`/`totalTasks`/`completedTasks` are a denormalized
+    // cache for future milestones to maintain as tasks change - the M1
+    // dashboard never trusts them and always recomputes live from
+    // studyPlanTasks (see convex/StudyPlanner.ts) so these three fields are
+    // safe to leave at 0 until a later milestone starts writing them.
+    studyPlans: defineTable({
+      userId: v.id('UserTable'),
+      title: v.string(),
+      description: v.optional(v.string()),
+      learningGoal: v.optional(v.string()),
+      status: v.union(
+        v.literal('active'),
+        v.literal('paused'),
+        v.literal('completed'),
+        v.literal('archived')
+      ),
+      startDate: v.optional(v.string()),
+      targetEndDate: v.optional(v.string()),
+      progress: v.number(),
+      totalTasks: v.number(),
+      completedTasks: v.number(),
+      // M2 - captured from the Create Study Plan form (both AI and manual;
+      // AI also feeds these back from what it generated) so a future "edit
+      // plan" screen has the original inputs to work from.
+      currentLevel: v.optional(
+        v.union(v.literal('beginner'), v.literal('intermediate'), v.literal('advanced'))
+      ),
+      targetLevel: v.optional(
+        v.union(v.literal('beginner'), v.literal('intermediate'), v.literal('advanced'))
+      ),
+      availableHoursPerDay: v.optional(v.number()),
+      preferredStudyDays: v.optional(v.array(v.string())),
+      learningPreferences: v.optional(v.array(v.string())),
+      additionalInstructions: v.optional(v.string()),
+      generationMethod: v.optional(v.union(v.literal('ai'), v.literal('manual'))),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_user_status', ['userId', 'status']),
+
+    // A learning phase/week within a plan. M2 writes these on plan creation;
+    // M3 (Study Plan Details) is where they're browsed/edited afterward.
+    studyPlanPhases: defineTable({
+      studyPlanId: v.id('studyPlans'),
+      userId: v.id('UserTable'),
+      title: v.string(),
+      description: v.optional(v.string()),
+      order: v.number(),
+      status: v.union(
+        v.literal('not_started'),
+        v.literal('in_progress'),
+        v.literal('completed')
+      ),
+      startDate: v.optional(v.string()),
+      endDate: v.optional(v.string()),
+      // M2 - learning objectives for the phase, from the AI response or
+      // typed manually.
+      objectives: v.optional(v.array(v.string())),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_studyPlan', ['studyPlanId'])
+      .index('by_studyPlan_order', ['studyPlanId', 'order']),
+
+    // An individual study task (M2 creates them; M3/M4 add task management,
+    // schedule, task details). `phaseId` is optional since a task can belong
+    // directly to a plan before phases are organized. Progress and "next
+    // upcoming task" for the M1 dashboard are computed live from this table.
+    studyPlanTasks: defineTable({
+      studyPlanId: v.id('studyPlans'),
+      phaseId: v.optional(v.id('studyPlanPhases')),
+      userId: v.id('UserTable'),
+      title: v.string(),
+      description: v.optional(v.string()),
+      status: v.union(
+        v.literal('pending'),
+        v.literal('in_progress'),
+        v.literal('completed'),
+        v.literal('skipped')
+      ),
+      priority: v.union(v.literal('low'), v.literal('medium'), v.literal('high')),
+      estimatedDuration: v.optional(v.number()),
+      scheduledDate: v.optional(v.string()),
+      // M4 - an optional time-of-day (e.g. "14:30", 24h) alongside
+      // scheduledDate for the Study Schedule / Task Details screens. A task
+      // can have a date with no specific time; it can never have a time
+      // without a date (the UI only exposes it once a date is set).
+      scheduledTime: v.optional(v.string()),
+      order: v.number(),
+      // M2 - "what done looks like" for this task, from the AI response or
+      // typed manually.
+      completionCriteria: v.optional(v.string()),
+      completedAt: v.optional(v.number()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_studyPlan', ['studyPlanId'])
+      .index('by_phase', ['phaseId'])
+      .index('by_user', ['userId'])
+      // M4 - Study Schedule's Day/Week/Month views query a user's tasks
+      // within a date range across every plan at once.
+      .index('by_user_scheduledDate', ['userId', 'scheduledDate']),
+
+    // A milestone/achievement marker within a plan. M2 writes these on plan
+    // creation; M3 (Study Plan Details) is where they're browsed/edited.
+    studyPlanMilestones: defineTable({
+      studyPlanId: v.id('studyPlans'),
+      userId: v.id('UserTable'),
+      title: v.string(),
+      description: v.optional(v.string()),
+      targetDate: v.optional(v.string()),
+      status: v.union(v.literal('pending'), v.literal('achieved')),
+      // M2 - from the AI response or typed manually.
+      completionCriteria: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_studyPlan', ['studyPlanId'])
+      .index('by_user', ['userId']),
 });

@@ -33,6 +33,14 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
         period: DAY,
         capacity: 60,
     },
+    // Study Planner - one Gemini call per AI plan generation (regenerating
+    // also consumes this; saving a manual plan never does).
+    studyPlanGenerate: {
+        kind: "token bucket",
+        rate: 10,
+        period: DAY,
+        capacity: 10,
+    },
 });
 
 export const consumeResumeMatchAnalysis = mutation({
@@ -71,5 +79,14 @@ export const consumeQuestionBankAnswer = mutation({
     },
     handler: async (ctx, { userId }) => {
         return await rateLimiter.limit(ctx, "questionBankAnswer", { key: userId });
+    },
+});
+
+export const consumeStudyPlanGenerate = mutation({
+    args: {
+        userId: v.string(),
+    },
+    handler: async (ctx, { userId }) => {
+        return await rateLimiter.limit(ctx, "studyPlanGenerate", { key: userId });
     },
 });

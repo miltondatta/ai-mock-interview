@@ -15,10 +15,9 @@ function stripWholeAnswerFence(text: string): string {
     return match ? match[1] : text.trim();
 }
 
-// QuestionAnswerService: on-demand detailed-answer generation for one
-// question. Called only when no cached answer exists yet (see
-// convex/QuestionBank.ts GetAnswer / BeginAnswerGeneration).
-export async function generateAnswer(ctx: AnswerGenerationContext): Promise<GenerateAnswerResult> {
+const MAX_ATTEMPTS = 2;
+
+async function callGemini(ctx: AnswerGenerationContext): Promise<GenerateAnswerResult> {
     const ai = getGeminiClient();
     const model = getQuestionBankModel();
     const response = await ai.models.generateContent({
@@ -32,4 +31,21 @@ export async function generateAnswer(ctx: AnswerGenerationContext): Promise<Gene
     if (!text) throw new Error("The AI provider returned an empty response.");
     const markdown = GeneratedAnswerSchema.parse(stripWholeAnswerFence(text));
     return { markdown, model, usageMetadata: response.usageMetadata };
+}
+
+// QuestionAnswerService: on-demand detailed-answer generation for one
+// question. Called only when no cached answer exists yet (see
+// convex/QuestionBank.ts GetAnswer / BeginAnswerGeneration). Retries once on
+// a thin/invalid response (safety refusal, truncation) before giving up,
+// mirroring the top-up resilience in questionGenerator.ts.
+export async function generateAnswer(ctx: AnswerGenerationContext): Promise<GenerateAnswerResult> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        try {
+            return await callGemini(ctx);
+        } catch (e) {
+            lastError = e;
+        }
+    }
+    throw lastError;
 }
