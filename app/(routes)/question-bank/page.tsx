@@ -27,7 +27,7 @@ function QuestionBank() {
   const [inputValue, setInputValue] = useState("")
   const [tags, setTags] = useState<string[]>([])
   const [jobDescription, setJobDescription] = useState("")
-  const [activeFilter, setActiveFilter] = useState<DifficultyFilterValue>("all")
+  const [activeFilter, setActiveFilter] = useState<DifficultyFilterValue>("beginner")
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
@@ -58,7 +58,7 @@ function QuestionBank() {
     setInputValue("")
     setTags([])
     setJobDescription("")
-    setActiveFilter("all")
+    setActiveFilter("beginner")
     setError(null)
     router.replace("/question-bank")
   }
@@ -67,12 +67,8 @@ function QuestionBank() {
     if (isGenerating || !userId) return
     setError(null)
 
-    let effectiveTags = tags
-    if (inputValue.trim()) {
-      effectiveTags = tags.includes(inputValue.trim()) ? tags : [...tags, inputValue.trim()]
-      setTags(effectiveTags)
-      setInputValue("")
-    }
+    const typedTopic = inputValue.trim()
+    const effectiveTags = typedTopic && !tags.includes(typedTopic) ? [...tags, typedTopic] : tags
 
     if (effectiveTags.length === 0) {
       setError(mode === "skill" ? "Please add at least one topic." : "Please enter a job title.")
@@ -99,7 +95,9 @@ function QuestionBank() {
         setError(data?.error ?? "Unable to generate questions right now. Please try again.")
         return
       }
-      setActiveFilter("all")
+      setTags(effectiveTags)
+      setInputValue("")
+      setActiveFilter("beginner")
       router.push(`/question-bank?collectionId=${data.collectionId}`)
     } catch (e) {
       setError(
@@ -226,6 +224,10 @@ function QuestionBank() {
 
       {collection && (
         <>
+          <div className="mt-8 text-center">
+            <h2 className="text-xl font-bold tracking-tight text-foreground">{subjectTitle}</h2>
+          </div>
+
           <div className="mt-7 flex justify-center">
             <DifficultyFilters active={activeFilter} onChange={setActiveFilter} counts={counts} />
           </div>

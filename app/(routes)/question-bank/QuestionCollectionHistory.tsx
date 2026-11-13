@@ -16,7 +16,7 @@ function formatCreatedAt(timestamp: number) {
   return new Date(timestamp).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
 }
 
-const HISTORY_ROW_GRID = "md:grid md:grid-cols-[minmax(0,1fr)_9rem_11rem_8rem] md:items-center md:gap-5"
+const HISTORY_ROW_GRID = "md:grid md:grid-cols-[minmax(0,1fr)_8rem_12rem_13.5rem] md:items-center md:gap-5"
 
 interface HistoryRowProps {
   item: QuestionBankCollectionSummary
@@ -29,7 +29,7 @@ function HistoryRow({ item, onDelete, onShare }: HistoryRowProps) {
   const subject = item.generationMode === "job" ? item.jobTitle || item.title : item.topics.join(", ")
   return (
     <div className={cn("group flex flex-col gap-3 px-5 py-4 transition-colors hover:bg-muted/50", HISTORY_ROW_GRID)}>
-      <Link href={href} className="flex items-center gap-3 focus-visible:outline-none md:contents">
+      <Link href={href} className="flex min-w-0 items-center gap-3 focus-visible:outline-none">
         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <BookOpen className="size-5" />
         </div>
@@ -43,12 +43,12 @@ function HistoryRow({ item, onDelete, onShare }: HistoryRowProps) {
         {item.totalQuestions} questions
       </p>
 
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground md:text-sm md:text-foreground">
+      <p className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground md:text-sm md:text-foreground">
         <CalendarClock className="size-3.5 shrink-0 text-primary md:hidden" />
         {formatCreatedAt(item.createdAt)}
       </p>
 
-      <div className="flex items-center gap-2 md:justify-end">
+      <div className="flex flex-nowrap items-center gap-2 md:justify-end">
         <Button size="sm" nativeButton={false} render={<Link href={href} />}>
           View <ArrowRight />
         </Button>
@@ -95,7 +95,7 @@ function QuestionCollectionHistory({ userId, items }: { userId: Id<"UserTable">;
   return (
     <section className="mt-14">
       <div>
-        <h2 className="text-xl font-bold tracking-tight">Question Collection History</h2>
+        <h2 className="text-xl font-bold tracking-tight">Question Bank History</h2>
         <p className="mt-1 text-sm text-muted-foreground">Saved question collections. Open one to revisit its questions and answers.</p>
       </div>
 
