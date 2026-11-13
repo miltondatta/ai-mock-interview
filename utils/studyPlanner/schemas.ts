@@ -12,7 +12,7 @@ const dateSchema = z.string().trim().regex(DATE_RE, "Expected a YYYY-MM-DD date.
 // Gemini is asked for lowercase enum values but is prompted in a way that
 // could plausibly come back "Beginner"/"High" - normalize case before
 // validating against the strict enum instead of rejecting a cosmetic mismatch.
-function lenientEnum<T extends [string, ...string[]]>(values: T) {
+function lenientEnum<T extends readonly [string, ...string[]]>(values: T) {
     return z.preprocess((val) => (typeof val === "string" ? val.trim().toLowerCase() : val), z.enum(values));
 }
 

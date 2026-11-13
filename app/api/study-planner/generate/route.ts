@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     const preferredStudyDays = Array.isArray(body.preferredStudyDays)
-        ? Array.from(new Set(body.preferredStudyDays.filter((d: unknown): d is string => typeof d === "string" && ALLOWED_DAYS.has(d))))
+        ? Array.from(new Set<string>(body.preferredStudyDays.filter((d: unknown): d is string => typeof d === "string" && ALLOWED_DAYS.has(d))))
         : [];
 
     const learningPreferences = Array.isArray(body.learningPreferences)
