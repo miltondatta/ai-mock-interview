@@ -16,6 +16,8 @@ import type * as QuestionBank from "../QuestionBank.js";
 import type * as ResumeMatch from "../ResumeMatch.js";
 import type * as Resumes from "../Resumes.js";
 import type * as StudyPlanner from "../StudyPlanner.js";
+import type * as StudyRoom from "../StudyRoom.js";
+import type * as StudyRoomWorkspace from "../StudyRoomWorkspace.js";
 import type * as UserProfile from "../UserProfile.js";
 import type * as UserSettings from "../UserSettings.js";
 import type * as admin from "../admin.js";
@@ -37,6 +39,8 @@ declare const fullApi: ApiFromModules<{
   ResumeMatch: typeof ResumeMatch;
   Resumes: typeof Resumes;
   StudyPlanner: typeof StudyPlanner;
+  StudyRoom: typeof StudyRoom;
+  StudyRoomWorkspace: typeof StudyRoomWorkspace;
   UserProfile: typeof UserProfile;
   UserSettings: typeof UserSettings;
   admin: typeof admin;

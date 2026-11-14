@@ -3,7 +3,7 @@
 import React, { Suspense, useCallback, useContext, useEffect, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useQuery } from "convex/react"
-import { CircleAlert, Info, Plus, X } from "lucide-react"
+import { CircleAlert, GraduationCap, Info, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/convex/_generated/api"
@@ -480,6 +480,26 @@ function ResumeMatchAnalyzer() {
           resumeAvailable={resumes?.some((r) => r.id === viewedRecord.resumeId) ?? false}
           jobDescriptionUrl={viewedRecord.jobDescriptionUrl}
         />
+      )}
+
+      {/* M5 - AI Study Room integration: only offered once this analysis is
+          a persisted record (saved just now, or opened from history) - the
+          Study Room stores a reference to it, never a copy, so there has
+          to be a real record to reference. */}
+      {(savedAnalysisId || (isViewingRecord && viewedRecord)) && !isAnalyzing && (
+        <div className="mt-4 flex flex-col items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-foreground">
+            Turn the skill gaps from this analysis into a personalized AI Study Room learning session.
+          </p>
+          <a
+            href={`/study-room/create?source=resumeMatch&resumeMatchId=${savedAnalysisId ?? viewedRecord?._id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <GraduationCap className="size-3.5" /> Create Learning Session
+          </a>
+        </div>
       )}
 
       <Tabs

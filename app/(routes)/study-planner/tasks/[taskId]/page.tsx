@@ -16,6 +16,7 @@ import {
   Sparkles,
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
 } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -56,6 +57,16 @@ function TaskDetailsPage() {
   const updateTask = useMutation(api.StudyPlanner.UpdateTask)
   const deleteTask = useMutation(api.StudyPlanner.DeleteTask)
 
+  // M5 - optional, read-only: any AI Study Room sessions already started
+  // from this task ("show relevant Study Room session references within
+  // the corresponding Study Planner task"). Study Planner never writes to
+  // Study Room's tables - this is a one-directional read of Study Room's
+  // own public query.
+  const studyRoomLinks = useQuery(
+    api.StudyRoom.GetStudyRoomsForStudyTask,
+    userId && data?.task._id ? { userId, studyTaskId: data.task._id as Id<"studyPlanTasks"> } : "skip"
+  )
+
   const [editOpen, setEditOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -84,6 +95,7 @@ function TaskDetailsPage() {
   const backHref = plan ? `/study-planner/${plan._id}` : "/study-planner"
 
   const studyRoomParams = new URLSearchParams({
+    source: "studyPlanner",
     topic: task.title,
     ...(task.description ? { description: task.description } : {}),
     ...(plan ? { studyPlanId: plan._id, planTitle: plan.title } : {}),
@@ -201,13 +213,32 @@ function TaskDetailsPage() {
           </div>
         </div>
         <a
-          href={`/study-room?${studyRoomParams.toString()}`}
+          href={`/study-room/create?${studyRoomParams.toString()}`}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/40 bg-card px-4 py-2.5 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/10"
         >
           <Sparkles className="size-4" /> Start Learning in AI Study Room
         </a>
+
+        {studyRoomLinks && studyRoomLinks.length > 0 && (
+          <div className="flex flex-col gap-2 border-t border-primary/20 pt-3">
+            <p className="text-xs font-semibold text-muted-foreground">Study Room sessions started from this task</p>
+            {studyRoomLinks.map((link) => (
+              <a
+                key={link.studyRoomId}
+                href={link.latestSession ? `/study-room/session/${link.latestSession._id}` : `/study-room/${link.studyRoomId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+              >
+                <ExternalLink className="size-3.5" /> {link.roomTitle}
+                {link.latestSession?.status === "in_progress" ? " (in progress)" : ""}
+                {link.latestSession?.summaryStatus === "ready" ? " - summary ready" : ""}
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:items-center sm:justify-between">

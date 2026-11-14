@@ -14,9 +14,15 @@ interface QuestionCardProps {
   question: QuestionBankQuestion
   index: number
   defaultExpanded?: boolean
+  // M5 - AI Study Room integration: optional selection checkbox so the
+  // learner can pick which questions to practice with the Tutor. Omitted
+  // entirely (the default) renders exactly as before M5.
+  selectable?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }
 
-function QuestionCard({ question, index, defaultExpanded }: QuestionCardProps) {
+function QuestionCard({ question, index, defaultExpanded, selectable, selected, onToggleSelect }: QuestionCardProps) {
   const [expanded, setExpanded] = useState(!!defaultExpanded)
   const [requesting, setRequesting] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
@@ -75,6 +81,16 @@ function QuestionCard({ question, index, defaultExpanded }: QuestionCardProps) {
         aria-expanded={expanded}
         className="flex w-full items-center gap-3 px-5 py-4 text-left"
       >
+        {selectable && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onClick={(e) => e.stopPropagation()}
+            onChange={() => onToggleSelect?.()}
+            aria-label="Select this question to practice with the AI Tutor"
+            className="size-4 shrink-0 cursor-pointer rounded border-border text-primary"
+          />
+        )}
         <span className="text-sm font-semibold text-muted-foreground tabular-nums">{index + 1}.</span>
         <Badge variant={meta.badgeVariant}>{meta.label}</Badge>
         <span className="min-w-0 flex-1 text-[15px] font-medium text-foreground">{question.question}</span>

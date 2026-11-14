@@ -380,4 +380,222 @@ export default defineSchema({
     })
       .index('by_studyPlan', ['studyPlanId'])
       .index('by_user', ['userId']),
+
+    // --- AI Study Room (app/(routes)/study-room) -----------------------------
+    // Independent module - does not depend on Study Planner, Question Bank or
+    // Interview, and is never required by them (see convex/StudyRoom.ts for
+    // the "Keep AI Study Room independent" note). M1 ships this schema plus
+    // room/session CRUD and read-only dashboard queries. The AI Tutor,
+    // Whiteboard, Code Editor, Notes, conversation transcript and
+    // AI-generated session summary are all later milestones - the optional
+    // fields on studyRoomSessions below exist now only so those milestones
+    // can start writing to this same row without another schema migration;
+    // M1 never reads or writes any of them.
+    // One row per learning room a user creates (e.g. "Mastering System
+    // Design"). A room is a reusable container the learner can return to
+    // and start another session in - it intentionally has no
+    // active/completed/paused status of its own (only active/archived);
+    // "in progress" / "completed" belongs to a *session*, not the room.
+    studyRooms: defineTable({
+      userId: v.id('UserTable'),
+      title: v.string(),
+      topic: v.string(),
+      objective: v.optional(v.string()),
+      category: v.optional(v.string()),
+      difficulty: v.optional(
+        v.union(v.literal('beginner'), v.literal('intermediate'), v.literal('advanced'))
+      ),
+      learningPreferences: v.optional(v.array(v.string())),
+      additionalInstructions: v.optional(v.string()),
+      status: v.union(v.literal('active'), v.literal('archived')),
+      lastAccessedAt: v.optional(v.number()),
+      // M5 - optional references to the existing record this room was
+      // started from, if any. These are *references only* (ids), never a
+      // copy of the source module's own data - the Tutor pulls the live
+      // record at session-start time (see app/api/study-room/tutor/start)
+      // instead of this row duplicating it. A room with none of these set
+      // was created independently, which remains the default path.
+      // Deleting the source record is never cascaded here, and every place
+      // that resolves one of these ids treats "not found" as "unavailable"
+      // rather than an error - see StudyRoom.ts's resolveLinkedSource.
+      studyPlanId: v.optional(v.id('studyPlans')),
+      studyTaskId: v.optional(v.id('studyPlanTasks')),
+      questionBankCollectionId: v.optional(v.id('questionBankCollections')),
+      questionBankQuestionIds: v.optional(v.array(v.id('questionBankQuestions'))),
+      resumeMatchAnalysisId: v.optional(v.id('ResumeMatchAnalysisTable')),
+      interviewReviewId: v.optional(v.id('InterviewSessionTable')),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_user_status', ['userId', 'status'])
+      .index('by_studyTask', ['studyTaskId']),
+
+    // One row per learning session started inside a room. M1 only ever
+    // created a row (status "in_progress") and let the learner explicitly
+    // end it. M2 adds the live AI Tutor voice/text conversation on top of
+    // the same row - `elevenlabsConversationId` is set once the Tutor's
+    // ElevenLabs session connects (same convention as
+    // InterviewSessionTable.elevenlabsConversationId). `transcript` was a
+    // M1 placeholder for the conversation; M2 supersedes it with the
+    // dedicated, queryable `studyRoomMessages` table below instead (a single
+    // growing blob doesn't fit "retrieve history / search / paginate" as
+    // well as Study Planner's own precedent of giving related data its own
+    // table) - it is left in place, unused, rather than removed, in case a
+    // later milestone still wants a denormalized snapshot.
+    studyRoomSessions: defineTable({
+      studyRoomId: v.id('studyRooms'),
+      userId: v.id('UserTable'),
+      // M4 - `abandoned` is now actually set (tab closed/connection dropped
+      // without an explicit End Session click, via EndStudyRoomSession's
+      // `reason` arg) rather than only being a defined-but-unused literal.
+      // `completed` stays reserved for an explicit, learner-initiated end.
+      status: v.union(v.literal('in_progress'), v.literal('completed'), v.literal('abandoned')),
+      startedAt: v.number(),
+      endedAt: v.optional(v.number()),
+      durationSeconds: v.optional(v.number()),
+      // M2 - set once the Tutor's ElevenLabs conversation connects. A
+      // session can reconnect multiple times (pause/resume), so this always
+      // holds the *current/most recent* conversation id, not a history of
+      // every reconnect - that history is implicit in studyRoomMessages'
+      // own timestamps.
+      elevenlabsConversationId: v.optional(v.string()),
+      // M1 placeholder, still unused - superseded by studyRoomMessages (M2)
+      // and the dedicated workspace tables (M3). Left in place rather than
+      // removed.
+      transcript: v.optional(v.any()),
+      workspaceState: v.optional(v.any()),
+      // M4 - AI-generated lesson summary. `summary` holds the structured
+      // payload (see utils/studyRoom/summarySchema.ts) once `summaryStatus`
+      // is "ready"; `summaryStatus`/`summaryGeneratedAt` let the UI and the
+      // generation route check/transition state without reading the whole
+      // blob, and let BeginSummaryGeneration (convex/StudyRoom.ts) guard
+      // against two concurrent generations for the same session.
+      summary: v.optional(v.any()),
+      summaryStatus: v.optional(
+        v.union(v.literal('none'), v.literal('generating'), v.literal('ready'), v.literal('failed'))
+      ),
+      summaryGeneratedAt: v.optional(v.number()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_studyRoom', ['studyRoomId'])
+      .index('by_user', ['userId'])
+      .index('by_user_status', ['userId', 'status']),
+
+    // M2 - one row per Tutor/learner conversation turn, in send order.
+    // `source` records whether a *learner* turn arrived as a transcribed
+    // voice utterance or a typed message (via ElevenLabs' sendUserMessage,
+    // which injects straight into the same live session - voice and text
+    // are two input channels on one conversation, never two separate
+    // conversations). Left undefined for tutor turns, which are always
+    // spoken and transcribed together. No raw audio is ever stored here or
+    // anywhere else - only the transcribed text.
+    studyRoomMessages: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      role: v.union(v.literal('tutor'), v.literal('learner')),
+      text: v.string(),
+      source: v.optional(v.union(v.literal('voice'), v.literal('text'))),
+      createdAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId'])
+      .index('by_session_createdAt', ['studyRoomSessionId', 'createdAt']),
+
+    // M3 - Whiteboard, Code Editor and Notes workspace persistence, plus the
+    // Tutor's own tool-action audit trail (convex/StudyRoomWorkspace.ts).
+    // Everything here is scoped to a single *session*, not the room -
+    // "reopen a session with its previous workspace content" means exactly
+    // that session's content; starting a new session in the same room
+    // starts every tool empty again, same as studyRoomMessages already
+    // works per-session.
+
+    // One row per session. `snapshot` is an Excalidraw scene (elements plus
+    // a small appState subset) saved verbatim as JSON on every debounced
+    // client-side change - Excalidraw's own scene shape, never reinterpreted
+    // here, so no parallel shape schema needs to be maintained by hand.
+    studyRoomWhiteboards: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      snapshot: v.any(),
+      updatedAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId']),
+
+    // One row per code file/tab open in a session's Code Editor. `order`
+    // controls tab order; a session can have several files side by side.
+    // M4 - `lastRun` persists only the most recent execution's
+    // output/metadata per file (not a full run history - "where
+    // appropriate" per the M4 spec, and a full per-run log would be an
+    // unbounded, never-asked-for table), so reopening a session still shows
+    // what the code last did without re-running it.
+    studyRoomCodeFiles: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      filename: v.string(),
+      language: v.string(),
+      content: v.string(),
+      order: v.number(),
+      lastRun: v.optional(
+        v.object({
+          stdout: v.string(),
+          stderr: v.string(),
+          exitCode: v.optional(v.number()),
+          ranAt: v.number(),
+        })
+      ),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId'])
+      .index('by_session_order', ['studyRoomSessionId', 'order']),
+
+    // One Notes document per session. `content` is the TipTap document as
+    // JSON (editor.getJSON(), stringified) - search/copy/export all work
+    // off the rendered text client-side rather than a second stored copy.
+    studyRoomNotes: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      title: v.string(),
+      content: v.string(),
+      updatedAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId']),
+
+    // Which tools are open and how the panels are arranged, so reopening a
+    // session restores the workspace layout itself, not only each tool's
+    // content. M4 - `panelWeights` and `maximizedTool` actually get
+    // saved/restored now (M3 defined a `panelSizes` array for this but
+    // never wired it up - replaced here with a clearer per-tool object
+    // instead of a position-indexed array, since nothing had started
+    // depending on the old shape yet).
+    studyRoomWorkspaceLayout: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      openTools: v.array(v.union(v.literal('whiteboard'), v.literal('code'), v.literal('notes'))),
+      activeTool: v.optional(v.union(v.literal('whiteboard'), v.literal('code'), v.literal('notes'))),
+      maximizedTool: v.optional(v.union(v.literal('whiteboard'), v.literal('code'), v.literal('notes'))),
+      panelWeights: v.optional(
+        v.object({ whiteboard: v.number(), code: v.number(), notes: v.number() })
+      ),
+      updatedAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId']),
+
+    // Audit trail of every Tutor-initiated tool action - applied, rejected
+    // by the learner, or timed out waiting for approval. Stores a short
+    // human-readable summary only, never the full payload. Nothing reads
+    // this yet; it exists so a future "what did the Tutor do here" view
+    // (or M4 session summary) has something to read without another schema
+    // migration.
+    studyRoomToolActions: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      tool: v.union(v.literal('whiteboard'), v.literal('code'), v.literal('notes')),
+      actionType: v.string(),
+      summary: v.string(),
+      status: v.union(v.literal('applied'), v.literal('rejected'), v.literal('timed_out')),
+      createdAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId']),
 });

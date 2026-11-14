@@ -262,6 +262,19 @@ function InterviewFeedbackPage() {
                         </p>
                     )}
 
+                    {/* M5 - AI Study Room integration: only offered once this
+                        interview actually has feedback to build a session from. */}
+                    {interview?.feedback && (
+                        <a
+                            href={`/study-room/create?source=interviewReview&interviewReviewId=${interview._id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-3.5 py-2 text-xs font-semibold text-primary hover:bg-primary/10"
+                        >
+                            Create Study Room to Improve These Areas
+                        </a>
+                    )}
+
                     {structured && <StructuredFeedbackView data={structured} />}
 
                     {parsed.rating && (

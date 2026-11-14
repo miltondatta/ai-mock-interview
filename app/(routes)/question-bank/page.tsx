@@ -3,7 +3,7 @@
 import React, { Suspense, useContext, useMemo, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useQuery } from "convex/react"
-import { CircleAlert, Plus, Share2, Sparkles, X } from "lucide-react"
+import { CircleAlert, GraduationCap, Plus, Share2, Sparkles, X } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { UserDetailContext } from "@/context/UserDetailContext"
@@ -31,6 +31,10 @@ function QuestionBank() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
+  // M5 - AI Study Room integration: pick questions to practice with the
+  // Tutor instead of just reading the AI-generated answer here.
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const userCollections = useQuery(
     api.QuestionBank.GetUserCollections,
@@ -60,7 +64,28 @@ function QuestionBank() {
     setJobDescription("")
     setActiveFilter("beginner")
     setError(null)
+    setSelectionMode(false)
+    setSelectedIds(new Set())
     router.replace("/question-bank")
+  }
+
+  function toggleQuestionSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function startPracticeWithTutor() {
+    if (!collection || selectedIds.size === 0) return
+    const params = new URLSearchParams({
+      source: "questionBank",
+      questionBankId: collection._id,
+      questionIds: Array.from(selectedIds).join(","),
+    })
+    window.open(`/study-room/create?${params.toString()}`, "_blank", "noopener,noreferrer")
   }
 
   async function handleGenerate() {
@@ -224,8 +249,19 @@ function QuestionBank() {
 
       {collection && (
         <>
-          <div className="mt-8 text-center">
+          <div className="mt-8 flex flex-col items-center gap-2 text-center">
             <h2 className="text-xl font-bold tracking-tight text-foreground">{subjectTitle}</h2>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectionMode((v) => !v)
+                setSelectedIds(new Set())
+              }}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+            >
+              <GraduationCap className="size-4" />
+              {selectionMode ? "Cancel selection" : "Select questions to practice with AI Tutor"}
+            </button>
           </div>
 
           <div className="mt-7 flex justify-center">
@@ -239,6 +275,9 @@ function QuestionBank() {
                 question={q}
                 index={questions.indexOf(q)}
                 defaultExpanded={q._id === defaultExpandedId}
+                selectable={selectionMode}
+                selected={selectedIds.has(q._id)}
+                onToggleSelect={() => toggleQuestionSelected(q._id)}
               />
             ))}
             {visibleQuestions.length === 0 && (
@@ -247,6 +286,19 @@ function QuestionBank() {
               </div>
             )}
           </div>
+
+          {selectionMode && selectedIds.size > 0 && (
+            <div className="pointer-events-none fixed inset-x-4 bottom-4 z-40 flex justify-center sm:inset-x-auto sm:right-6 sm:bottom-6">
+              <button
+                type="button"
+                onClick={startPracticeWithTutor}
+                className="pointer-events-auto inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-lg transition-opacity hover:opacity-90"
+              >
+                <GraduationCap className="size-4" />
+                Practice {selectedIds.size} Question{selectedIds.size === 1 ? "" : "s"} with AI Tutor
+              </button>
+            </div>
+          )}
         </>
       )}
 
