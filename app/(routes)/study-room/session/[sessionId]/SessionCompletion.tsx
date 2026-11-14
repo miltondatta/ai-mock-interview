@@ -134,7 +134,7 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
   // "generating"/"ready"/"failed" on its own (M4 - "duplicate summaries are
   // avoided" and "generate only when sufficient information is available").
   useEffect(() => {
-    if (summaryData === undefined) return
+    if (summaryData === undefined || summaryData === null) return
     const key = sessionId
     if (triggerKeyRef.current === key) return
     triggerKeyRef.current = key
