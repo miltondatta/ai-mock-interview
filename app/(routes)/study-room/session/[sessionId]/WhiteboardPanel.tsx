@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types"
 import "@excalidraw/excalidraw/index.css"
 import SaveStatusBadge, { type SaveStatus } from "./SaveStatusBadge"
 import { retryAsync } from "./retryAsync"
@@ -20,11 +21,7 @@ import { retryAsync } from "./retryAsync"
 // export - this component only adds persistence and the Tutor hook-up.
 const Excalidraw = dynamic(async () => (await import("@excalidraw/excalidraw")).Excalidraw, { ssr: false })
 
-export type ExcalidrawApi = {
-  getSceneElements: () => readonly any[]
-  updateScene: (data: { elements?: readonly any[]; appState?: Record<string, unknown> }) => void
-  resetScene: () => void
-}
+export type ExcalidrawApi = Pick<ExcalidrawImperativeAPI, "getSceneElements" | "updateScene" | "resetScene">
 
 interface WhiteboardPanelProps {
   sessionId: string
@@ -123,7 +120,7 @@ function WhiteboardPanel({ sessionId, userId, onApiReady }: WhiteboardPanelProps
         <SaveStatusBadge status={saveStatus} onRetry={performSave} />
       </div>
       <Excalidraw
-        excalidrawAPI={(api: ExcalidrawApi) => setExcalidrawApi(api)}
+        excalidrawAPI={(api) => setExcalidrawApi(api)}
         onChange={(elements, appState) => handleChange(elements, appState)}
         theme="light"
       />

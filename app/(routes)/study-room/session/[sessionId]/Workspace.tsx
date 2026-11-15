@@ -373,15 +373,29 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   // "client tool" configured on the Study Room Tutor's ElevenLabs agent -
   // see AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md's M3 ACTION REQUIRED
   // section for the exact names/parameters to add there.
+  //
+  // useConversationClientTool only types a handler's args as
+  // Record<string, unknown> (its ClientTools default can't be satisfied by
+  // any handler with required params - that's a library-side constraint,
+  // not something fixable from here), so each handler with required args
+  // is wrapped and the args cast to its real parameter type.
 
   useConversationClientTool("get_workspace_context", getWorkspaceContext)
-  useConversationClientTool("open_workspace_tool", openWorkspaceTool)
-  useConversationClientTool("create_whiteboard_diagram", whiteboardAddDiagram)
-  useConversationClientTool("highlight_whiteboard_elements", whiteboardHighlight)
+  useConversationClientTool("open_workspace_tool", (args) =>
+    openWorkspaceTool(args as Parameters<typeof openWorkspaceTool>[0])
+  )
+  useConversationClientTool("create_whiteboard_diagram", (args) =>
+    whiteboardAddDiagram(args as Parameters<typeof whiteboardAddDiagram>[0])
+  )
+  useConversationClientTool("highlight_whiteboard_elements", (args) =>
+    whiteboardHighlight(args as Parameters<typeof whiteboardHighlight>[0])
+  )
   useConversationClientTool("clear_whiteboard", whiteboardClear)
-  useConversationClientTool("write_code", codeWrite)
-  useConversationClientTool("create_note", noteCreate)
-  useConversationClientTool("restructure_notes", noteRestructure)
+  useConversationClientTool("write_code", (args) => codeWrite(args as Parameters<typeof codeWrite>[0]))
+  useConversationClientTool("create_note", (args) => noteCreate(args as Parameters<typeof noteCreate>[0]))
+  useConversationClientTool("restructure_notes", (args) =>
+    noteRestructure(args as Parameters<typeof noteRestructure>[0])
+  )
 
   // --- Layout ---
 
