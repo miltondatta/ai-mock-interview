@@ -1,10 +1,197 @@
 # AI Study Room Implementation Progress
 
-Last updated: 2026-11-14
+Last updated: 2026-11-16
 
 ## Status: M1-M5 implemented in code. M2, M3 and M5 each have a manual ElevenLabs-dashboard step
 ## outside my reach - see all three "ACTION REQUIRED" sections below. Not tested (per explicit
 ## instruction). Not committed to git.
+
+---
+
+## PAUSED HERE (2026-11-16) - resume point for tomorrow
+
+Session paused mid-work at the user's request. Everything below this point and down to the next
+`---` is new since the last pause; the rest of this file (M1-M5, the 2026-11-15 greeting fix, all
+"ACTION REQUIRED" sections) is unchanged and still accurate. Two things to pick up tomorrow:
+
+### A. Duplicate Study Rooms bug - fixed in code, not yet verified
+
+**What was observed**: the Dashboard showed two Study Room cards with identical title/topic/
+objective, each with its own single session (not one room with two sessions - two separate
+`studyRooms` rows).
+
+**Root cause**: "Start Learning" (`app/(routes)/study-room/create/page.tsx`) calls two mutations
+back to back - `CreateStudyRoom` then `StartStudyRoomSession` - and neither had any
+duplicate-submission protection server-side. The form's own `saving` state + disabled button only
+guards against a double-click on the *same mounted form instance*; it cannot stop a second,
+independent submission from a different page load (e.g. the first request felt slow/stuck, the
+learner navigated back and re-clicked a "Start Learning in AI Study Room" link, or resubmitted a
+fresh copy of the form, while the first request was still quietly completing in the background).
+Both submissions succeed independently, each creating its own room + session.
+
+**Fix applied** (`convex/StudyRoom.ts`, both mutations - no UI code changed):
+- `CreateStudyRoom`: before inserting, now checks whether this same user already created a room
+  with the same trimmed `title` + `topic` (and the same linked Study Planner `studyTaskId`, when
+  present) within the last 30 seconds. If found, returns that existing room's id instead of
+  inserting a near-duplicate.
+- `StartStudyRoomSession`: before inserting, now checks whether the target room already has an
+  `in_progress` session started within the last 30 seconds. If found, returns that existing
+  session's id instead of inserting a second one - otherwise a deduplicated room from the fix above
+  could still end up with two sessions.
+- Window chosen (30s) is meant to catch rapid accidental retries, not block a learner who
+  intentionally starts a second, genuinely new room on the same topic later.
+
+**Not yet done**: not tested (per "don't test myself"). On resume: try the actual repro (start
+creating a room, and - ideally on a throttled/slow connection - navigate back and submit again
+before the first one would have finished) and confirm only one room+session results. Also worth
+just confirming the two existing duplicate rooms from the screenshot still need manual cleanup -
+this fix prevents *new* duplicates, it does not merge or delete the ones already created.
+
+### B. Tutor-operated Whiteboard/Code/Notes during live sessions - code is written, dashboard setup is the remaining gap
+
+This isn't a new bug - it's the same outstanding item M3's "ACTION REQUIRED" section (further down
+this file) has flagged since M3 was built, restated here because it came up again and is an easy
+thing to lose track of:
+
+- **The code side is fully implemented**: 8 ElevenLabs "Client Tools" (`get_workspace_context`,
+  `open_workspace_tool`, `create_whiteboard_diagram`, `highlight_whiteboard_elements`,
+  `clear_whiteboard`, `write_code`, `create_note`, `restructure_notes`), registered via
+  `useConversationClientTool` in `Workspace.tsx`, each operating on the real mounted Excalidraw/
+  Monaco/TipTap instance, persisting through Convex, and gating destructive actions behind
+  `ToolApprovalBanner` (Approve/Decline, 30s auto-decline). During a live conversation, it's the
+  **ElevenLabs agent's own LLM** that decides when to call one of these, based on its system
+  prompt - nothing client-side parses tutor speech to trigger them.
+- **What's still missing is two manual ElevenLabs-dashboard steps**, not code (see M3's "ACTION
+  REQUIRED" section below for the full table/wording to paste in):
+  1. Add all 8 Client Tools to the Study Room agent's configuration (name + parameter schema).
+  2. Add a line to the agent's system prompt telling it these tools exist and when to use them.
+- Until both are done, the three panels still work fine for **manual** use by the learner - only
+  the Tutor's own ability to act on them during speech is gated on this.
+
+### Quick checklist for tomorrow
+
+1. Add the 8 Client Tools + system-prompt line to the Study Room ElevenLabs agent (M3's "ACTION
+   REQUIRED" below has the exact table and wording).
+2. Re-verify the 2026-11-15 greeting fix's remaining dashboard items (also still open, see that
+   section): `{{first_message}}` field, "First message" override enabled, agent set to speak first,
+   a voice assigned.
+3. Manually delete/merge the two duplicate Study Rooms already created (the code fix only prevents
+   new ones).
+4. Try the duplicate-room repro described in part A above to confirm the fix holds.
+5. Once the Tutor actually speaks and has its tools, do a real end-to-end pass: confirm it opens/
+   draws on the Whiteboard, writes code, and takes notes unprompted when the conversation calls for
+   it.
+
+---
+
+## FIX (2026-11-15): AI Tutor connected but never spoke / never started the tutorial
+
+### Root cause
+
+The Study Room Tutor agent's dashboard "First message" field is the literal variable reference
+`{{first_message}}` (this was always the documented design - see M2's "ACTION REQUIRED" above,
+written before this agent existed). ElevenLabs does **only** literal `{{var}}` substitution on that
+field before TTS - the LLM never sees or translates it - so if the `first_message` dynamic variable
+isn't present in the session's `dynamicVariables` payload, ElevenLabs has nothing to substitute and
+the agent never produces an opening line (silently, not an error - the websocket stays connected).
+The user confirmed this directly: setting a dashboard "Test Value" for `first_message` made the agent
+speak in ElevenLabs' own test console, and without one it reported "Missing required dynamic
+variables in first message: {'first_message'}".
+
+Auditing the actual runtime payload (`app/api/study-room/tutor/start/route.ts` ->
+`utils/studyRoomTutorContext.ts` -> `StudyRoomTutorSession.tsx` -> `TutorCall.tsx`'s
+`conversation.startSession()`) confirmed the `first_message` key was **already** being included in
+`dynamicVariables` end to end - `buildStudyRoomDynamicVariables` already set `first_message:
+firstMessage` and `connection.dynamicVariables` was passed through unmodified at every hop. So the
+*variable* was never actually missing from this app's own requests. Two real, separate gaps existed
+alongside it, which is what was actually fixed:
+
+1. **The greeting was hardcoded English regardless of the session's language**
+   (`buildWelcomeMessage` in `utils/studyRoomTutorContext.ts` previously ignored `language` entirely),
+   contradicting "use the selected Study Room language" and meaning any learner using a non-English
+   `tutor_language` still heard/received an English `first_message`.
+2. **The greeting never mentioned the selected difficulty level**, even though the dynamic-variable
+   contract (and the agent's own system prompt) treats difficulty as a first-class piece of session
+   context.
+3. **No defensive fallback for an empty learner name inside the greeting builder itself** - it relied
+   entirely on the caller (`route.ts`'s `convexUser.name || "there"`) never changing, instead of being
+   correct on its own.
+
+### Files modified
+
+- `utils/studyRoomTutorContext.ts` - `buildWelcomeMessage` rewritten as a language- and
+  difficulty-aware generator (see "First Message generation logic" below). `buildStudyRoomDynamicVariables`
+  updated to pass `difficulty` and the already-resolved `language` into it. No dynamic variable *names*
+  were renamed or removed - `first_message` (and every other key) is unchanged, per "use the exact
+  variable names defined in ElevenLabs."
+- `AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md` - this section.
+
+No other file needed a code change: `app/api/study-room/tutor/start/route.ts`,
+`StudyRoomTutorSession.tsx` and `TutorCall.tsx` already built and forwarded `dynamicVariables` and
+`overrides.agent.firstMessage` correctly (verified against the proven-working
+`components/interview/InterviewCall.tsx`/`InterviewSession.tsx` pattern, which uses the exact same
+`conversationToken` + `dynamicVariables` + `overrides.agent.{firstMessage,language}` shape and the
+exact same `{{first_message}}`-dashboard-field trick, per that file's own code comments). Per
+instruction, `components/interview/*`, `app/api/interview/*`, `convex/Interview.ts` and
+`utils/elevenlabsContext.ts` were **not** touched - `utils/studyRoomTutorContext.ts` continues to only
+import `normalizeLanguageCode` from the latter, unchanged.
+
+### Dynamic variable changes
+
+None of the 10 dynamic variable **names** changed (`learner_name`, `tutor_topic`,
+`learning_objective`, `category`, `difficulty_level`, `learning_preferences`,
+`additional_instructions`, `tutor_language`, `conversation_history`, `first_message`,
+`integration_context` - unchanged, still exactly what M2/M5's "ACTION REQUIRED" sections told you to
+enable on the agent). Only the **value** of `first_message` is now computed differently (localized +
+difficulty-aware instead of English-only); every other variable's value logic is untouched.
+
+### First Message generation logic
+
+`buildWelcomeMessage` now:
+- Resolves the session's language down to one of 8 built-in greeting languages (`en`, `bn`, `hi`,
+  `es`, `fr`, `de`, `ar`, `zh` - the same set `utils/elevenlabsContext.ts` already supports for the
+  Interview feature), falling back to English for any other language code so the greeting is never
+  empty or broken for an unsupported language - `tutor_language` itself still carries the real
+  requested code either way, so the agent can still attempt to converse in it even when the *greeting
+  wording* falls back.
+- Picks a resume-specific template (`RESUME_GREETING`) when `conversation_history` is non-empty
+  (continuing a session), or a fresh-session template (`FRESH_GREETING`) otherwise, each hand-written
+  per language rather than machine-translated at runtime (this file deliberately never calls an LLM -
+  see its own top-of-file comment).
+- Injects the learner's name (guarded with a `"there"` fallback inside the function itself now, not
+  only at the caller), the topic, an optional objective clause (omitted entirely when there's no
+  objective, in every language), and a localized difficulty word (`DIFFICULTY_WORD`, separate from the
+  English-only `DIFFICULTY_LABEL` still sent as `difficulty_level` for the system prompt to read
+  directly).
+- Always returns a non-empty string and never interpolates `undefined`/`null` - every optional input
+  is coalesced to `""` before use, matching rules 3's explicit requirements.
+
+### Remaining configuration requirements (outside this session's reach - same constraint as every
+prior milestone's "ACTION REQUIRED")
+
+1. **Confirm the agent's dashboard "First message" field is exactly the literal text
+   `{{first_message}}`** (per M2's original setup instructions) - this fix assumes that's already true
+   per the user's own report; if it was changed to something else while debugging, it must be set back
+   to this exact literal string.
+2. **Confirm "First message" is enabled under the agent's Security -> Overrides settings.** If it
+   isn't, `overrides.agent.firstMessage` is silently dropped by ElevenLabs and the dashboard-side
+   `{{first_message}}` field (now correctly fed by this app either way) is the only thing standing
+   between silence and a greeting - so this one matters even with the code fix in place.
+3. **Confirm the agent is configured to speak first**, not to wait for the learner to speak first (an
+   agent-level conversation-flow setting, separate from the override permission above). If the agent
+   waits for the user, no first-message override or dynamic variable will ever cause it to speak
+   automatically - this is the one failure mode that genuinely cannot be fixed from this app's code.
+4. **Confirm a voice is assigned on the agent's Voice tab** - an agent with no TTS voice selected
+   produces no audio even when it does generate a response.
+5. Per rule 6, dashboard "Test Values" (like the one used to confirm the root cause above) must not be
+   relied on for production - they only apply inside ElevenLabs' own test console, never to real
+   sessions started by this app. Remove any Test Value set on `first_message` once the above is
+   confirmed working end-to-end, so a stale Test Value never masks a real regression later.
+
+Not tested (per explicit instruction) - on resume, start a fresh session and confirm Nova speaks the
+localized greeting automatically; then resume an existing session and confirm the "welcome back"
+variant; then, if a non-English `tutor_language` is in use, confirm the greeting itself is in that
+language and not English.
 
 ---
 

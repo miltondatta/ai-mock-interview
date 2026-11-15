@@ -341,10 +341,39 @@ export const CreateStudyRoom = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
     const refs = await validateOwnedRefs(ctx, args.userId, args);
+    const title = args.title.trim();
+    const topic = args.topic.trim();
+
+    // Guards against a genuine duplicate room: the Create Study Room form
+    // already disables its own submit button while a request is in flight,
+    // but that can't protect against a second, independent submission - a
+    // slow network response that reads as "hung" followed by a retry (e.g.
+    // navigating back and re-clicking a "Start Learning in AI Study Room"
+    // link, or resubmitting the form on a fresh page load), where the first
+    // call's insert still lands after the user has already retried. If this
+    // exact user created a room with the same title+topic (and the same
+    // Study Planner task, when linked) moments ago, reuse it instead of
+    // inserting a near-identical duplicate.
+    const DUPLICATE_WINDOW_MS = 30_000;
+    const recentRooms = await ctx.db
+      .query("studyRooms")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    const duplicate = recentRooms.find(
+      (r) =>
+        r.title === title &&
+        r.topic === topic &&
+        r.studyTaskId === refs.studyTaskId &&
+        now - r.createdAt < DUPLICATE_WINDOW_MS
+    );
+    if (duplicate) {
+      return { studyRoomId: duplicate._id };
+    }
+
     const studyRoomId = await ctx.db.insert("studyRooms", {
       userId: args.userId,
-      title: args.title,
-      topic: args.topic,
+      title,
+      topic,
       objective: args.objective,
       category: args.category,
       difficulty: args.difficulty,
@@ -462,6 +491,24 @@ export const StartStudyRoomSession = mutation({
   handler: async (ctx, args) => {
     await requireOwnedRoom(ctx, args.userId, args.studyRoomId);
     const now = Date.now();
+
+    // Same duplicate-submission guard as CreateStudyRoom just above it in
+    // the "Start Learning" flow: if this room already has an in_progress
+    // session that was started moments ago, a retried submission reusing a
+    // deduplicated room (see CreateStudyRoom) would otherwise still create a
+    // second session on it. Reuse that session instead.
+    const DUPLICATE_WINDOW_MS = 30_000;
+    const existingSessions = await ctx.db
+      .query("studyRoomSessions")
+      .withIndex("by_studyRoom", (q) => q.eq("studyRoomId", args.studyRoomId))
+      .collect();
+    const recentInProgress = existingSessions.find(
+      (s) => s.status === "in_progress" && now - s.startedAt < DUPLICATE_WINDOW_MS
+    );
+    if (recentInProgress) {
+      return { sessionId: recentInProgress._id };
+    }
+
     const sessionId = await ctx.db.insert("studyRoomSessions", {
       studyRoomId: args.studyRoomId,
       userId: args.userId,
