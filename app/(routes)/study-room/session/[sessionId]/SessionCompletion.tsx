@@ -138,7 +138,7 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
     const key = sessionId
     if (triggerKeyRef.current === key) return
     triggerKeyRef.current = key
-    if (summaryData.status === "none") {
+    if ( !summaryData || summaryData.status === "none") {
       requestSummary(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
