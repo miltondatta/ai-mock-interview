@@ -1,6 +1,7 @@
 import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
+import { deleteStudyRoomCascade, findStudyRoomsForStudyPlan } from "./StudyRoom";
 
 const LEVEL = v.union(v.literal("beginner"), v.literal("intermediate"), v.literal("advanced"));
 const PRIORITY = v.union(v.literal("low"), v.literal("medium"), v.literal("high"));
@@ -491,6 +492,18 @@ export const DeleteStudyPlan = mutation({
       .query("studyPlanTasks")
       .withIndex("by_studyPlan", (q) => q.eq("studyPlanId", args.studyPlanId))
       .collect();
+
+    // Study Rooms started from this plan or any of its tasks go with it,
+    // including their sessions, transcripts and workspace content. Found
+    // before the tasks are deleted, since a room may only be linked by task.
+    const studyRooms = await findStudyRoomsForStudyPlan(
+      ctx,
+      args.userId,
+      args.studyPlanId,
+      tasks.map((t) => t._id)
+    );
+    for (const room of studyRooms) await deleteStudyRoomCascade(ctx, room._id);
+
     for (const task of tasks) await ctx.db.delete(task._id);
 
     const phases = await ctx.db

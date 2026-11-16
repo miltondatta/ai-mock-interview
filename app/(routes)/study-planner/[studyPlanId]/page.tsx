@@ -91,6 +91,12 @@ function StudyPlanDetailsPage() {
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // Only fetched while the "Delete this study plan?" dialog is open.
+  const linkedStudyRoomCount = useQuery(
+    api.StudyRoom.CountStudyRoomsForStudyPlan,
+    userId && confirmTarget?.kind === "plan" ? { userId, studyPlanId: studyPlanId as Id<"studyPlans"> } : "skip"
+  )
+
   if (data === null) {
     return (
       <div className="mx-auto max-w-3xl px-6 py-14 text-center md:px-10">
@@ -141,7 +147,11 @@ function StudyPlanDetailsPage() {
       const totalTasks = phases.reduce((s, p) => s + p.totalTasks, 0) + unassignedTasks.length
       return {
         title: "Delete this study plan?",
-        description: `This permanently deletes "${plan.title}" along with its ${phases.length} phase(s), ${totalTasks} task(s) and ${milestones.length} milestone(s). This can't be undone.`,
+        description: `This permanently deletes "${plan.title}" along with its ${phases.length} phase(s), ${totalTasks} task(s) and ${milestones.length} milestone(s)${
+          linkedStudyRoomCount
+            ? `, plus ${linkedStudyRoomCount} AI Study Room(s) started from this plan, with all their sessions, transcripts, notes, code and whiteboards`
+            : ""
+        }. This can't be undone.`,
       }
     }
     if (confirmTarget.kind === "phase") {
@@ -307,7 +317,6 @@ function StudyPlanDetailsPage() {
             key={phase._id}
             phase={phase}
             userId={userId}
-            defaultOpen={phase.status !== "completed"}
             isFirst={i === 0}
             isLast={i === phases.length - 1}
             onEditPhase={() => setPhaseDialog({ open: true, phase })}

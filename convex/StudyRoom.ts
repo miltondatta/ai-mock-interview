@@ -461,6 +461,84 @@ export const SetStudyRoomStatus = mutation({
 // Deletes the room and cascades to every session that belongs to it. The
 // caller (UI) is responsible for requiring explicit confirmation first -
 // this mutation itself performs no confirmation step.
+const SESSION_SCOPED_TABLES = [
+  "studyRoomMessages",
+  "studyRoomWhiteboards",
+  "studyRoomCodeFiles",
+  "studyRoomNotes",
+  "studyRoomWorkspaceLayout",
+  "studyRoomToolActions",
+] as const;
+
+// Deletes a room together with every session in it and everything scoped
+// to those sessions (transcript, whiteboard, code, notes, layout, tool
+// actions) - deleting only the session rows used to leave all of that
+// orphaned. Callers must check ownership first. Also used by
+// StudyPlanner.DeleteStudyPlan to remove the rooms started from a plan.
+export async function deleteStudyRoomCascade(ctx: MutationCtx, studyRoomId: Id<"studyRooms">) {
+  const sessions = await getSessionsForRoom(ctx, studyRoomId);
+  for (const session of sessions) {
+    for (const table of SESSION_SCOPED_TABLES) {
+      const rows = await ctx.db
+        .query(table)
+        .withIndex("by_session", (q) => q.eq("studyRoomSessionId", session._id))
+        .collect();
+      for (const row of rows) await ctx.db.delete(row._id);
+    }
+    await ctx.db.delete(session._id);
+  }
+  await ctx.db.delete(studyRoomId);
+}
+
+// Every room this user started from a Study Plan - linked to the plan
+// itself, or to any of its tasks (covers a room whose studyPlanId wasn't
+// stored, since the task link alone is enough to belong to the plan).
+export async function findStudyRoomsForStudyPlan(
+  ctx: QueryCtx,
+  userId: Id<"UserTable">,
+  studyPlanId: Id<"studyPlans">,
+  studyTaskIds: Id<"studyPlanTasks">[]
+) {
+  const byId = new Map<Id<"studyRooms">, Doc<"studyRooms">>();
+  const viaPlan = await ctx.db
+    .query("studyRooms")
+    .withIndex("by_studyPlan", (q) => q.eq("studyPlanId", studyPlanId))
+    .collect();
+  for (const room of viaPlan) byId.set(room._id, room);
+  for (const taskId of studyTaskIds) {
+    const viaTask = await ctx.db
+      .query("studyRooms")
+      .withIndex("by_studyTask", (q) => q.eq("studyTaskId", taskId))
+      .collect();
+    for (const room of viaTask) byId.set(room._id, room);
+  }
+  return [...byId.values()].filter((room) => room.userId === userId);
+}
+
+// Shown in Study Planner's "Delete this study plan?" dialog, so the learner
+// knows how many Study Rooms the delete will also remove.
+export const CountStudyRoomsForStudyPlan = query({
+  args: {
+    userId: v.id("UserTable"),
+    studyPlanId: v.id("studyPlans"),
+  },
+  handler: async (ctx, args) => {
+    const plan = await ctx.db.get(args.studyPlanId);
+    if (!plan || plan.userId !== args.userId) return 0;
+    const tasks = await ctx.db
+      .query("studyPlanTasks")
+      .withIndex("by_studyPlan", (q) => q.eq("studyPlanId", args.studyPlanId))
+      .collect();
+    const rooms = await findStudyRoomsForStudyPlan(
+      ctx,
+      args.userId,
+      args.studyPlanId,
+      tasks.map((t) => t._id)
+    );
+    return rooms.length;
+  },
+});
+
 export const DeleteStudyRoom = mutation({
   args: {
     userId: v.id("UserTable"),
@@ -468,11 +546,7 @@ export const DeleteStudyRoom = mutation({
   },
   handler: async (ctx, args) => {
     await requireOwnedRoom(ctx, args.userId, args.studyRoomId);
-    const sessions = await getSessionsForRoom(ctx, args.studyRoomId);
-    for (const session of sessions) {
-      await ctx.db.delete(session._id);
-    }
-    await ctx.db.delete(args.studyRoomId);
+    await deleteStudyRoomCascade(ctx, args.studyRoomId);
   },
 });
 
@@ -492,21 +566,21 @@ export const StartStudyRoomSession = mutation({
     await requireOwnedRoom(ctx, args.userId, args.studyRoomId);
     const now = Date.now();
 
-    // Same duplicate-submission guard as CreateStudyRoom just above it in
-    // the "Start Learning" flow: if this room already has an in_progress
-    // session that was started moments ago, a retried submission reusing a
-    // deduplicated room (see CreateStudyRoom) would otherwise still create a
-    // second session on it. Reuse that session instead.
-    const DUPLICATE_WINDOW_MS = 30_000;
+    // A room has at most one live session. Leaving a session without
+    // clicking End Session intentionally leaves it in_progress (that's how
+    // "pause" works), so if one already exists - whether from a retried
+    // submission moments ago or a session paused hours earlier - resume it
+    // instead of opening a second, parallel session on the same room.
     const existingSessions = await ctx.db
       .query("studyRoomSessions")
       .withIndex("by_studyRoom", (q) => q.eq("studyRoomId", args.studyRoomId))
       .collect();
-    const recentInProgress = existingSessions.find(
-      (s) => s.status === "in_progress" && now - s.startedAt < DUPLICATE_WINDOW_MS
-    );
-    if (recentInProgress) {
-      return { sessionId: recentInProgress._id };
+    const inProgress = existingSessions
+      .filter((s) => s.status === "in_progress")
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    if (inProgress) {
+      await ctx.db.patch(args.studyRoomId, { lastAccessedAt: now, updatedAt: now });
+      return { sessionId: inProgress._id };
     }
 
     const sessionId = await ctx.db.insert("studyRoomSessions", {
@@ -593,6 +667,8 @@ export const GetStudyRoomsForStudyTask = query({
         return {
           studyRoomId: room._id,
           roomTitle: room.title,
+          roomStatus: room.status,
+          lastActivityAt: Math.max(room.lastAccessedAt ?? 0, latest?.startedAt ?? 0, room.createdAt),
           latestSession: latest
             ? {
                 _id: latest._id,

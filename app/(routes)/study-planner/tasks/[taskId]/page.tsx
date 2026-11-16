@@ -101,6 +101,23 @@ function TaskDetailsPage() {
     ...(plan ? { studyPlanId: plan._id, planTitle: plan.title } : {}),
     studyTaskId: task._id,
   })
+  const createStudyRoomHref = `/study-room/create?${studyRoomParams.toString()}`
+
+  // If this task already has a (non-archived) Study Room, the primary action
+  // goes back to it - straight into its paused session when there is one -
+  // instead of creating a near-identical new room every time.
+  const existingStudyRoom = (studyRoomLinks ?? [])
+    .filter((link) => link.roomStatus !== "archived")
+    .sort((a, b) => {
+      const aLive = a.latestSession?.status === "in_progress" ? 1 : 0
+      const bLive = b.latestSession?.status === "in_progress" ? 1 : 0
+      return bLive - aLive || b.lastActivityAt - a.lastActivityAt
+    })[0]
+  const existingStudyRoomHref = existingStudyRoom
+    ? existingStudyRoom.latestSession?.status === "in_progress"
+      ? `/study-room/session/${existingStudyRoom.latestSession._id}`
+      : `/study-room/${existingStudyRoom.studyRoomId}`
+    : null
 
   async function toggleDone() {
     await updateTask({
@@ -212,14 +229,42 @@ function TaskDetailsPage() {
             </p>
           </div>
         </div>
-        <a
-          href={`/study-room/create?${studyRoomParams.toString()}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/40 bg-card px-4 py-2.5 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/10"
-        >
-          <Sparkles className="size-4" /> Start Learning in AI Study Room
-        </a>
+        {studyRoomLinks === undefined ? (
+          // Wait for the linked-rooms query so the button can't be clicked
+          // as "Start" a moment before it would have become "Continue".
+          <div className="h-[42px] w-64 animate-pulse rounded-xl bg-primary/10" />
+        ) : existingStudyRoomHref ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <a
+              href={existingStudyRoomHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/40 bg-card px-4 py-2.5 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/10"
+            >
+              <Sparkles className="size-4" />
+              {existingStudyRoom?.latestSession?.status === "in_progress"
+                ? "Continue Your Study Room Session"
+                : "Continue in AI Study Room"}
+            </a>
+            <a
+              href={createStudyRoomHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Start a new Study Room instead
+            </a>
+          </div>
+        ) : (
+          <a
+            href={createStudyRoomHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/40 bg-card px-4 py-2.5 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/10"
+          >
+            <Sparkles className="size-4" /> Start Learning in AI Study Room
+          </a>
+        )}
 
         {studyRoomLinks && studyRoomLinks.length > 0 && (
           <div className="flex flex-col gap-2 border-t border-primary/20 pt-3">

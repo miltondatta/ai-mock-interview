@@ -415,9 +415,11 @@ export default defineSchema({
       // record at session-start time (see app/api/study-room/tutor/start)
       // instead of this row duplicating it. A room with none of these set
       // was created independently, which remains the default path.
-      // Deleting the source record is never cascaded here, and every place
-      // that resolves one of these ids treats "not found" as "unavailable"
-      // rather than an error - see StudyRoom.ts's resolveLinkedSource.
+      // Exception: deleting a whole Study Plan also deletes the rooms
+      // started from it or its tasks (StudyPlanner.DeleteStudyPlan).
+      // Deleting any other source record is never cascaded here, and every
+      // place that resolves one of these ids treats "not found" as
+      // "unavailable" rather than an error - see resolveLinkedSource.
       studyPlanId: v.optional(v.id('studyPlans')),
       studyTaskId: v.optional(v.id('studyPlanTasks')),
       questionBankCollectionId: v.optional(v.id('questionBankCollections')),
@@ -429,7 +431,8 @@ export default defineSchema({
     })
       .index('by_user', ['userId'])
       .index('by_user_status', ['userId', 'status'])
-      .index('by_studyTask', ['studyTaskId']),
+      .index('by_studyTask', ['studyTaskId'])
+      .index('by_studyPlan', ['studyPlanId']),
 
     // One row per learning session started inside a room. M1 only ever
     // created a row (status "in_progress") and let the learner explicitly
