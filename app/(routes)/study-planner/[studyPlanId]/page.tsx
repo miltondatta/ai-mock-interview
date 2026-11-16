@@ -181,7 +181,7 @@ function StudyPlanDetailsPage() {
       </Link>
 
       <div className="mt-4 flex flex-col gap-4 rounded-2xl border border-border bg-card p-6 shadow-sm sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">{plan.title}</h1>
             <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.className}`}>{statusMeta.label}</span>
@@ -191,8 +191,8 @@ function StudyPlanDetailsPage() {
               </span>
             )}
           </div>
-          {plan.learningGoal && <p className="mt-1 text-sm font-medium text-muted-foreground">{plan.learningGoal}</p>}
-          {plan.description && <p className="mt-2 max-w-xl text-sm text-muted-foreground">{plan.description}</p>}
+          {plan.learningGoal && <p className="mt-1 text-justify text-sm font-medium text-muted-foreground [text-align-last:justify]">{plan.learningGoal}</p>}
+          {plan.description && <p className="mt-2 text-justify text-sm text-muted-foreground [text-align-last:justify]">{plan.description}</p>}
 
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
