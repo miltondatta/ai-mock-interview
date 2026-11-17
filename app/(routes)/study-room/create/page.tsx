@@ -66,6 +66,12 @@ function CreateStudyRoomForm() {
   const spPlanTitle = searchParams.get("planTitle")
   const spStudyPlanId = searchParams.get("studyPlanId")
   const spStudyTaskId = searchParams.get("studyTaskId")
+  // Optional extras from a Study Planner task: its phase's learning
+  // objectives (newline-separated), the plan's level, and extra context
+  // (completion criteria / plan goal). Older links without them still work.
+  const spObjectives = searchParams.get("objectives")
+  const spDifficulty = searchParams.get("difficulty")
+  const spContext = searchParams.get("context")
   const qbCollectionId = searchParams.get("questionBankId")
   const qbQuestionIdsParam = searchParams.get("questionIds")
   const qbQuestionIds = qbQuestionIdsParam ? qbQuestionIdsParam.split(",").filter(Boolean) : []
@@ -105,7 +111,20 @@ function CreateStudyRoomForm() {
     if (source === "studyPlanner" && spTopic) {
       setTitle(spTopic)
       setTopic(spTopic)
-      if (spDescription) setObjective(spDescription)
+      const objectiveLines = spObjectives
+        ? spObjectives.split("\n").map((o) => o.trim()).filter(Boolean)
+        : []
+      const objectiveText = [
+        spDescription ?? "",
+        objectiveLines.length > 0 ? `Learning objectives:\n${objectiveLines.map((o) => `- ${o}`).join("\n")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+      if (objectiveText) setObjective(objectiveText)
+      if (spDifficulty && (DIFFICULTY_LEVELS as string[]).includes(spDifficulty)) {
+        setDifficulty(spDifficulty as Difficulty)
+      }
+      if (spContext) setAdditionalInstructions(spContext)
       prefilledRef.current = true
     } else if (source === "questionBank" && qbCollectionData) {
       const subject =
@@ -128,7 +147,7 @@ function CreateStudyRoomForm() {
       setObjective("Work on the areas flagged for improvement in this interview's feedback.")
       prefilledRef.current = true
     }
-  }, [source, spTopic, spDescription, qbCollectionData, qbQuestionIds.length, rmAnalysisData, irInterviewData])
+  }, [source, spTopic, spDescription, spObjectives, spDifficulty, spContext, qbCollectionData, qbQuestionIds.length, rmAnalysisData, irInterviewData])
 
   function togglePreference(pref: string) {
     setPreferences((prev) => (prev.includes(pref) ? prev.filter((p) => p !== pref) : [...prev, pref]))
@@ -202,7 +221,7 @@ function CreateStudyRoomForm() {
     <div className="mx-auto max-w-2xl px-6 py-10 md:px-10 md:py-14">
       <Link
         href="/study-room"
-        className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80"
       >
         <ArrowLeft className="size-4" /> Back to AI Study Room
       </Link>

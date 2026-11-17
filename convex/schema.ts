@@ -1,6 +1,62 @@
 import { defineSchema,defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// Study Planner - learning resources attached to a studyPlanTasks row (see
+// the field comment on studyPlanTasks.learningResources). Exported so
+// convex/StudyPlanner.ts validates writes against exactly the same shape.
+const RESOURCE_SEARCH_STATUS = v.union(v.literal('found'), v.literal('none_found'), v.literal('unavailable'));
+export const taskLearningResourcesValidator = v.object({
+  taskType: v.union(
+    v.literal('video'),
+    v.literal('reading'),
+    v.literal('practice'),
+    v.literal('quiz'),
+    v.literal('project'),
+    v.literal('revision')
+  ),
+  // The task title the resources were found for - lets the UI flag them as
+  // possibly outdated after the task is renamed, without UpdateTask having
+  // to know anything about resources.
+  generatedForTitle: v.string(),
+  generatedAt: v.number(),
+  videoSearchStatus: RESOURCE_SEARCH_STATUS,
+  readingSearchStatus: RESOURCE_SEARCH_STATUS,
+  videos: v.array(
+    v.object({
+      videoId: v.string(),
+      title: v.string(),
+      channel: v.optional(v.string()),
+      url: v.string(),
+    })
+  ),
+  readings: v.array(
+    v.object({
+      title: v.string(),
+      url: v.string(),
+      source: v.string(),
+    })
+  ),
+  guide: v.optional(
+    v.object({
+      overview: v.string(),
+      steps: v.array(v.string()),
+      examples: v.array(v.string()),
+      expectedOutcomes: v.array(v.string()),
+      deliverables: v.array(v.string()),
+    })
+  ),
+  quiz: v.optional(
+    v.array(
+      v.object({
+        question: v.string(),
+        options: v.array(v.string()),
+        correctIndex: v.number(),
+        explanation: v.string(),
+      })
+    )
+  ),
+});
+
 export default defineSchema({
     UserTable: defineTable({
       name: v.string(),
@@ -354,6 +410,13 @@ export default defineSchema({
       // typed manually.
       completionCriteria: v.optional(v.string()),
       completedAt: v.optional(v.number()),
+      // Learning resources for the Task Details screen, discovered on demand
+      // by app/api/study-planner/task-resources. Every URL here was resolved
+      // and verified server-side (YouTube via oEmbed, articles via a live
+      // fetch) - the AI never writes URLs or resource titles directly. The
+      // guide/quiz text is AI-written and labelled as such in the UI.
+      // Purely informational: nothing here ever changes the task's status.
+      learningResources: v.optional(taskLearningResourcesValidator),
       createdAt: v.number(),
       updatedAt: v.number(),
     })

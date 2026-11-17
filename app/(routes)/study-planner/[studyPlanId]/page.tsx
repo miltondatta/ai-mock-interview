@@ -176,7 +176,7 @@ function StudyPlanDetailsPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10 md:px-10 md:py-14">
-      <Link href="/study-planner" className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
+      <Link href="/study-planner" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80">
         <ArrowLeft className="size-4" /> Back to Study Planner
       </Link>
 
@@ -211,7 +211,7 @@ function StudyPlanDetailsPage() {
           <button
             type="button"
             onClick={() => setEditPlanOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-opacity hover:opacity-90"
           >
             <Pencil className="size-4" /> Edit Plan
           </button>
@@ -220,7 +220,7 @@ function StudyPlanDetailsPage() {
             <button
               type="button"
               onClick={() => setStudyPlanStatus({ userId, studyPlanId: plan._id as Id<"studyPlans">, status: plan.status === "paused" ? "active" : "paused" })}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-primary/40 bg-card px-4 py-2 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/10"
             >
               {plan.status === "paused" ? (
                 <>

@@ -124,7 +124,7 @@ function StudyRoomDetailPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10 md:px-10 md:py-14">
-      <Link href="/study-room" className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
+      <Link href="/study-room" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80">
         <ArrowLeft className="size-4" /> Back to AI Study Room
       </Link>
 

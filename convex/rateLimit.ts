@@ -41,6 +41,14 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
         period: DAY,
         capacity: 10,
     },
+    // Study Planner - one learning-resource discovery run for one task
+    // (a few grounded Gemini searches + verification fetches).
+    studyTaskResources: {
+        kind: "token bucket",
+        rate: 40,
+        period: DAY,
+        capacity: 40,
+    },
 });
 
 export const consumeResumeMatchAnalysis = mutation({
@@ -88,5 +96,14 @@ export const consumeStudyPlanGenerate = mutation({
     },
     handler: async (ctx, { userId }) => {
         return await rateLimiter.limit(ctx, "studyPlanGenerate", { key: userId });
+    },
+});
+
+export const consumeStudyTaskResources = mutation({
+    args: {
+        userId: v.string(),
+    },
+    handler: async (ctx, { userId }) => {
+        return await rateLimiter.limit(ctx, "studyTaskResources", { key: userId });
     },
 });

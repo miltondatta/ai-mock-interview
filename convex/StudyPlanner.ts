@@ -2,6 +2,7 @@ import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/s
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deleteStudyRoomCascade, findStudyRoomsForStudyPlan } from "./StudyRoom";
+import { taskLearningResourcesValidator } from "./schema";
 
 const LEVEL = v.union(v.literal("beginner"), v.literal("intermediate"), v.literal("advanced"));
 const PRIORITY = v.union(v.literal("low"), v.literal("medium"), v.literal("high"));
@@ -871,8 +872,37 @@ export const GetTaskDetails = query({
         completedAt: task.completedAt,
         createdAt: task.createdAt,
       },
-      plan: plan ? { _id: plan._id, title: plan.title, status: plan.status } : null,
+      plan: plan
+        ? {
+            _id: plan._id,
+            title: plan.title,
+            status: plan.status,
+            learningGoal: plan.learningGoal,
+            currentLevel: plan.currentLevel,
+            targetLevel: plan.targetLevel,
+          }
+        : null,
       phase: phase ? { _id: phase._id, title: phase.title, objectives: phase.objectives ?? [] } : null,
+      // Returned separately from `task` so the task object handed to
+      // TaskFormDialog stays exactly what it was before.
+      learningResources: task.learningResources ?? null,
     };
+  },
+});
+
+// Stores the verified learning resources found by
+// app/api/study-planner/task-resources for one task. Only ever touches
+// `learningResources` - never status/completedAt, so finding, opening or
+// working through resources can't complete a task by itself.
+export const SaveTaskLearningResources = mutation({
+  args: {
+    userId: v.id("UserTable"),
+    taskId: v.id("studyPlanTasks"),
+    learningResources: taskLearningResourcesValidator,
+  },
+  handler: async (ctx, args) => {
+    await requireOwnedTask(ctx, args.userId, args.taskId);
+    await ctx.db.patch(args.taskId, { learningResources: args.learningResources });
+    return { ok: true };
   },
 });

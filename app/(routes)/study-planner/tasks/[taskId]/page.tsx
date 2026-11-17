@@ -24,6 +24,7 @@ import { UserDetailContext } from "@/context/UserDetailContext"
 import TaskFormDialog from "../../[studyPlanId]/TaskFormDialog"
 import ConfirmDialog from "../../[studyPlanId]/ConfirmDialog"
 import { PRIORITY_META, TASK_STATUS_META, formatDate, formatDuration } from "../../[studyPlanId]/types"
+import LearningResourcesSection, { type LearningResources } from "./LearningResourcesSection"
 
 interface TaskDetailsResult {
   task: {
@@ -39,8 +40,16 @@ interface TaskDetailsResult {
     completedAt?: number
     createdAt: number
   }
-  plan: { _id: string; title: string; status: string } | null
+  plan: {
+    _id: string
+    title: string
+    status: string
+    learningGoal?: string
+    currentLevel?: "beginner" | "intermediate" | "advanced"
+    targetLevel?: "beginner" | "intermediate" | "advanced"
+  } | null
   phase: { _id: string; title: string; objectives: string[] } | null
+  learningResources: LearningResources | null
 }
 
 function TaskDetailsPage() {
@@ -94,12 +103,25 @@ function TaskDetailsPage() {
   const isDone = task.status === "completed"
   const backHref = plan ? `/study-planner/${plan._id}` : "/study-planner"
 
+  // Extra context for the AI Study Room: the phase's learning objectives,
+  // the plan's level (difficulty), and the task's completion criteria +
+  // plan goal - all prefilled (and still editable) on Study Room's create form.
+  const studyRoomContext = [
+    task.completionCriteria ? `Completion criteria: ${task.completionCriteria}` : "",
+    plan?.learningGoal ? `Overall learning goal: ${plan.learningGoal}` : "",
+    phase ? `Study plan phase: ${phase.title}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
   const studyRoomParams = new URLSearchParams({
     source: "studyPlanner",
     topic: task.title,
     ...(task.description ? { description: task.description } : {}),
     ...(plan ? { studyPlanId: plan._id, planTitle: plan.title } : {}),
     studyTaskId: task._id,
+    ...(phase && phase.objectives.length > 0 ? { objectives: phase.objectives.join("\n") } : {}),
+    ...(plan?.currentLevel ? { difficulty: plan.currentLevel } : {}),
+    ...(studyRoomContext ? { context: studyRoomContext } : {}),
   })
   const createStudyRoomHref = `/study-room/create?${studyRoomParams.toString()}`
 
@@ -138,12 +160,15 @@ function TaskDetailsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10 md:px-10 md:py-14">
-      <Link href={backHref} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
+    <div className="mx-auto max-w-6xl px-6 py-10 md:px-10 md:py-14">
+      <Link href={backHref} className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80">
         <ArrowLeft className="size-4" /> Back to {plan ? plan.title : "Study Planner"}
       </Link>
 
-      <div className="mt-4 rounded-2xl border border-border bg-card p-6 shadow-sm">
+      {/* Task details (left) and learning resources (right) side by side on
+          large screens; stacked on smaller ones. */}
+      <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-start">
+      <div className="min-w-0 rounded-2xl border border-border bg-card p-6 shadow-sm">
         <div className="flex flex-wrap items-center gap-2.5">
           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.className}`}>{statusMeta.label}</span>
           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${priorityMeta.className}`}>{priorityMeta.label} priority</span>
@@ -214,6 +239,9 @@ function TaskDetailsPage() {
             <CheckCircle2 className="size-3.5" /> Completed on {new Date(task.completedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
           </p>
         )}
+      </div>
+
+      <LearningResourcesSection taskId={task._id} taskTitle={task.title} resources={data.learningResources} />
       </div>
 
       <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-5">

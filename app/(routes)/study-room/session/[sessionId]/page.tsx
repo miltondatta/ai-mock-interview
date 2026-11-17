@@ -59,7 +59,7 @@ function StudyRoomSessionPage() {
       <div className="mx-auto max-w-3xl px-6 pt-6 md:px-10">
         <Link
           href={`/study-room/${room._id}`}
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80"
         >
           <ArrowLeft className="size-4" /> Back to {room.title}
         </Link>
