@@ -1,7 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -21,7 +21,10 @@ import { retryAsync } from "./retryAsync"
 // export - this component only adds persistence and the Tutor hook-up.
 const Excalidraw = dynamic(async () => (await import("@excalidraw/excalidraw")).Excalidraw, { ssr: false })
 
-export type ExcalidrawApi = Pick<ExcalidrawImperativeAPI, "getSceneElements" | "updateScene" | "resetScene">
+export type ExcalidrawApi = Pick<
+  ExcalidrawImperativeAPI,
+  "getSceneElements" | "updateScene" | "resetScene" | "scrollToContent"
+>
 
 interface WhiteboardPanelProps {
   sessionId: string
@@ -37,6 +40,10 @@ function WhiteboardPanel({ sessionId, userId, onApiReady }: WhiteboardPanelProps
   const saveSnapshot = useMutation(api.StudyRoomWorkspace.SaveWhiteboardSnapshot)
 
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawApi | null>(null)
+  // Phase 3 (C6) - true once the saved scene has been applied (or there was
+  // none), so the Tutor is only handed the API after that point; acting
+  // earlier would be overwritten by the restore's updateScene.
+  const [restored, setRestored] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
   const loadedRef = useRef(false)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -64,13 +71,15 @@ function WhiteboardPanel({ sessionId, userId, onApiReady }: WhiteboardPanelProps
         }
       }
     }
+    setRestored(true)
   }, [excalidrawApi, saved])
 
   useEffect(() => {
+    if (!excalidrawApi || !restored) return
     onApiReady(excalidrawApi)
     return () => onApiReady(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [excalidrawApi])
+  }, [excalidrawApi, restored])
 
   async function performSave() {
     const next = pendingRef.current
@@ -108,24 +117,65 @@ function WhiteboardPanel({ sessionId, userId, onApiReady }: WhiteboardPanelProps
     }
   }
 
-  function handleChange(elements: readonly any[], appState: any) {
-    pendingRef.current = { elements, background: appState?.viewBackgroundColor }
+  // Phase 2 (C5) - Excalidraw is React.memo'd with a shallow prop compare;
+  // the inline arrow callbacks it used to get were new on every render, so
+  // every parent render (previously ~60/s from the waveform) re-rendered the
+  // whole canvas. Both callbacks are now stable references. performSave is
+  // reached through a latest-value ref, so the debounced save still always
+  // uses the current props/mutation.
+  const performSaveRef = useRef(performSave)
+  useEffect(() => {
+    performSaveRef.current = performSave
+  })
+
+  // Excalidraw fires onChange for pointer moves, scrolling, selection and
+  // other appState-only updates too. Those can't change what gets saved
+  // (elements + background), so they no longer reset the save timer. A
+  // change is skipped only when it's the *same elements array* (no
+  // updateScene replacement - e.g. the Tutor's highlight tool replaces the
+  // array with recoloured copies that keep their old `version`) *and* the
+  // same (count, version sum, background) - in-place edits bump an element's
+  // `version`. Cleared after a failed save so the next interaction retries
+  // it, as before.
+  const lastScheduledSignatureRef = useRef<string | null>(null)
+  const lastScheduledElementsRef = useRef<readonly any[] | null>(null)
+
+  const handleChange = useCallback((elements: readonly any[], appState: any) => {
+    const background = appState?.viewBackgroundColor
+    let versionSum = 0
+    for (const el of elements) versionSum += el?.version ?? 0
+    const signature = `${elements.length}:${versionSum}:${background ?? ""}`
+    if (elements === lastScheduledElementsRef.current && signature === lastScheduledSignatureRef.current) return
+    lastScheduledElementsRef.current = elements
+    lastScheduledSignatureRef.current = signature
+
+    pendingRef.current = { elements, background }
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(performSave, 800)
-  }
+    saveTimerRef.current = setTimeout(() => performSaveRef.current(), 800)
+  }, [])
+
+  const handleExcalidrawApi = useCallback((api: ExcalidrawImperativeAPI) => {
+    setExcalidrawApi(api)
+  }, [])
+
+  useEffect(() => {
+    if (saveStatus === "error") {
+      lastScheduledSignatureRef.current = null
+      lastScheduledElementsRef.current = null
+    }
+  }, [saveStatus])
 
   return (
     <div className="relative h-full w-full">
       <div className="absolute right-2 top-2 z-10 rounded-md bg-card/90 px-2 py-1 shadow-sm">
         <SaveStatusBadge status={saveStatus} onRetry={performSave} />
       </div>
-      <Excalidraw
-        excalidrawAPI={(api) => setExcalidrawApi(api)}
-        onChange={(elements, appState) => handleChange(elements, appState)}
-        theme="light"
-      />
+      <Excalidraw excalidrawAPI={handleExcalidrawApi} onChange={handleChange} theme="light" />
     </div>
   )
 }
 
-export default WhiteboardPanel
+// Phase 2 - props (sessionId, userId, Workspace's stable onApiReady) don't
+// change during a session, so Workspace re-renders (splitter drags, layout
+// changes, approval banner) no longer reach the canvas.
+export default memo(WhiteboardPanel)

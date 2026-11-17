@@ -1,10 +1,361 @@
 # AI Study Room Implementation Progress
 
-Last updated: 2026-11-16
+Last updated: 2026-11-17 (Phases 1-4 - see the PHASE sections below, newest first)
 
 ## Status: M1-M5 implemented in code. M2, M3 and M5 each have a manual ElevenLabs-dashboard step
 ## outside my reach - see all three "ACTION REQUIRED" sections below. Not tested (per explicit
 ## instruction). Not committed to git.
+
+---
+
+## PHASE 3 + PHASE 4 (2026-11-17) - COMPLETE (code), NOT TESTED
+
+Phase 3 had never been implemented before Phase 4 was requested; the user chose "do Phase 3 (C6/C7/C8)
+first, then Phase 4" in one run. Nothing was run/tested (per instruction). One central ElevenLabs agent
+still drives every tool via client tools - no new LLM agents/requests were introduced. Phase 1 (audio,
+reconnect, lease) and Phase 2 (memoization, waveform isolation) are preserved; panel props stay stable.
+
+### Files
+Modified (all in `app/(routes)/study-room/session/[sessionId]/`): `Workspace.tsx` (rewritten),
+`WhiteboardPanel.tsx`, `NotesPanel.tsx`, `CodeEditorPanel.tsx`, `ToolApprovalBanner.tsx`, `workspaceTypes.ts`.
+New: `tutorTools/whiteboardTools.ts`, `tutorTools/notesMarkdown.ts`, `tutorTools/notesAuthorship.ts`.
+Unchanged: Convex schema/functions, all API routes (incl. `/api/study-room/code/run`), TutorCall,
+StudyRoomTutorSession, ElevenLabs agent config, dynamic variables, prompts, Mock Interview.
+
+### Phase 3 (C6 / C7 / C8)
+- **C6 readiness**: `waitFor()` (50ms polling, 10s cap) - tools open the panel and wait for it instead of
+  replying "ask me again". Ready means: whiteboard API handed over **after the saved scene is restored**
+  (`WhiteboardPanel` `restored` state - acting earlier would be overwritten by the restore); Code =
+  files loaded + active file (`isReady()`); Notes = editor + saved notes loaded (`isReady()`).
+- **C7 approval queue**: FIFO of approvals; one banner at a time with a "+N more" count; each one's 30s
+  timeout starts only when it is shown; resolution is keyed by approval id so stale timers/clicks can't
+  resolve the wrong request; every waiting approval is settled ("timed_out") on unmount.
+- **C8 mounted panels**: open-but-not-visible tools (overflow on mobile/tablet, or another panel maximised)
+  stay mounted with `display:none`, so Excalidraw/Monaco/TipTap keep state, refs stay valid and
+  `get_workspace_context` sees them. Closing a panel still unmounts it. Layout/splitters unchanged.
+
+### Tool result format (Milestone 4)
+Every tool returns a JSON string of `{ ok, status, message, ...data }`, `status` one of
+`applied | declined | timed_out | failed | not_found | invalid`, plus follow-up data (element ids, block
+ids, run output) so a result can feed the next call. Identical concurrent mutating calls (same tool +
+same args) are rejected while the first is in flight. Tool actions are logged via the existing
+`LogToolAction` (applied/rejected/timed_out). All tool work is async on the client - the voice pipeline
+is never blocked (the SDK dispatches tool calls without awaiting them).
+
+### Milestone 1 - Whiteboard (`tutorTools/whiteboardTools.ts`)
+- **Context** (`get_workspace_context.whiteboard`): shapes `{id,type,label,x,y,width,height}`, connections
+  `{id,type,from,to,label}`, counts, overall bounds; labels folded into their shapes; capped at 40 each
+  with `truncated`.
+- **Diagrams**: layouts `flowchart` (default) / `hierarchy` (BFS layering + one barycenter pass to reduce
+  crossings, `direction` down|right), `concept_map` (highest-degree node centred, neighbours in a ring,
+  rest in an outer ring), `row`. Node shapes rectangle/ellipse/diamond, sized to their label. Placed below
+  existing content (never on top). Arrows are computed boundary-to-boundary (rect/ellipse/diamond maths)
+  and **bound** (`startBinding`/`endBinding` + shapes' `boundElements`), so they stay attached when the
+  learner drags shapes. `replace: true` asks for approval first when the board has content.
+- **Element ops**: add (rectangle/ellipse/diamond/text), update (label/text, stroke/background colour by
+  name or hex, width/height - labels re-laid out by Excalidraw's converter, bound arrows re-routed), move
+  (x/y or dx/dy; label and attached arrows follow), delete (approval always; also removes labels and
+  attached arrows, cleans references), connect, update connection (label and/or re-point).
+- Highlight now also accepts element `ids`; clear unchanged (approval). Changes go through `updateScene`
+  with bumped element versions, so the Phase 2 save signature + existing autosave persist them.
+
+### Milestone 2 - Notes (`tutorTools/notesMarkdown.ts`, `notesAuthorship.ts`, `NotesPanel.tsx`)
+- **Sanitised Markdown**: Tutor content is parsed to TipTap JSON (headings h1-h3, paragraphs with line
+  breaks, bullet/ordered/task lists incl. one-level nesting, fenced code blocks with language,
+  blockquotes, horizontal rules; bold/italic/code/strike/==highlight==). It is **never** parsed as HTML -
+  any markup is inserted as inert text. Links become `text (url)`.
+- **Authorship**: global `author` attribute on top-level block types, rendered `data-author="tutor"` (saved
+  in the HTML), styled with a primary left border + an "Added by Nova" legend in the toolbar.
+  `keepOnSplit:false`, so Enter after a Tutor paragraph starts a learner paragraph. Older notes keep
+  their previous "🤖 Added by Nova" blockquote markers.
+- **Targeted operations** (ProseMirror range transactions; learner cursor/selection/undo preserved):
+  insert (end/start/after a section/after the selection), read (whole or one section; blocks with ids
+  `b<index>-<hash>` + author), rewrite/append a section, delete a section, reorganise blocks under new
+  headings (nothing dropped - unplaced blocks go under "Other notes"), legacy full replace.
+- **Confirmation**: rewriting a section containing learner-written text, deleting a section,
+  reorganising non-empty notes, and the legacy full replace all require approval (with previews).
+  Appending / adding never does. Autosave + conflict detection unchanged (same `performSave`).
+
+### Milestone 3 - Code Editor (`CodeEditorPanel.tsx`)
+- **Context** (`get_workspace_context.codeEditor`): filename, language, line count, numbered code (whole
+  file up to 6000 chars, else a +-60-line window around the cursor), selection text + line range, cursor
+  line/column, +-8 surrounding lines, last run summary, file list. `read_code` returns any line range
+  (<= 400 lines).
+- **run_code**: reuses the existing `/api/study-room/code/run` route unchanged (Piston sandbox, language
+  allow-list, 20k char cap, 12s run/compile timeouts) - nothing runs on the Next.js server. Returns
+  `{status: success|runtime_error|compile_error|timeout|failed|stopped, exitCode, stdout, stderr,
+  compileOutput, error, signal}` (outputs capped 3000 chars). `timeout` = sandbox SIGKILL. A run already
+  in progress (learner or Tutor) blocks a second one. Results are shown in the console and recorded via
+  `RecordCodeRun` exactly like a manual run.
+- **Learner runs reach the Tutor**: after a Run-button run, a `sendContextualUpdate` with the result is
+  sent to the live conversation (no reply/speech triggered; silently skipped when disconnected).
+- **write_code** modes: `replace`, `append`, `replace_selection`, `insert_at_cursor`. On the open file these
+  are Monaco `executeEdits` on just the affected range (learner's cursor/selection elsewhere, scroll and
+  undo kept; Ctrl+Z reverts the Tutor's edit) followed by one immediate save. Replacing non-empty code or
+  a selection requires approval; the banner shows the new code and the Tutor's `explanation`.
+
+### ACTION REQUIRED - ElevenLabs dashboard (Study Room Tutor agent only)
+Tools only work once configured as **Client Tools** on the Study Room agent (not the Mock Interview agent),
+with "wait for response" on and a response timeout comfortably above 30s for tools that can ask for
+approval. Existing 8 tools keep their names; some gained optional parameters.
+
+| Tool | Parameters | Notes |
+|---|---|---|
+| `get_workspace_context` | none | Structured state of all three tools (see above). Call before referring to ids. |
+| `open_workspace_tool` | `tool` (whiteboard/code/notes) | |
+| `create_whiteboard_diagram` | `nodes` [{`id`,`label`,`shape`?: rectangle/ellipse/diamond}], `edges`? [{`from`,`to`,`label`?}], `title`?, `layout`? (flowchart/hierarchy/concept_map/row), `direction`? (down/right), `replace`? (bool) | Returns `nodeIds` (your id -> element id). `replace` asks approval. |
+| `highlight_whiteboard_elements` | `labels`? [string], `ids`? [string] | |
+| `clear_whiteboard` | none | Approval. |
+| `add_whiteboard_element` | `type` (rectangle/ellipse/diamond/text), `label`?, `x`?, `y`?, `width`?, `height`?, `strokeColor`?, `backgroundColor`? | Returns `elementId`. |
+| `update_whiteboard_element` | `id`, `label`?, `strokeColor`?, `backgroundColor`?, `width`?, `height`? | |
+| `move_whiteboard_element` | `id`, `x`?, `y`?, `dx`?, `dy`? | |
+| `delete_whiteboard_elements` | `ids` [string] | Approval; also removes attached arrows. |
+| `connect_whiteboard_elements` | `from`, `to`, `label`? | Returns `connectionId`. |
+| `update_whiteboard_connection` | `id`, `label`?, `from`?, `to`? | |
+| `write_code` | `content`, `mode`? (replace/append/replace_selection/insert_at_cursor), `language`?, `filename`?, `explanation`? | Approval when overwriting code/selection. |
+| `run_code` | `filename`? | Returns `run` (status, stdout, stderr, ...). |
+| `read_code` | `filename`?, `start_line`?, `end_line`? | |
+| `create_note` | `content` (Markdown), `heading`?, `position`? (end/start/after_section/after_selection), `section`? | Additive, no approval. |
+| `read_notes` | `section`? | Returns blocks with ids + author. |
+| `edit_note_section` | `section`, `content` (Markdown), `mode`? (replace/append), `explanation`? | Approval if replacing learner text. |
+| `delete_note_section` | `section` | Approval. |
+| `restructure_notes` | `sections`? [{`heading`,`block_ids` [string]}] (preferred), or legacy `content` (Markdown) | Approval when notes aren't empty. |
+
+Suggested system-prompt addition: "Call get_workspace_context before referring to whiteboard elements,
+note blocks or code. Prefer additive and targeted actions (create_note, edit_note_section with append,
+write_code with append/replace_selection, add/connect elements) over replacing content. Notes content
+is Markdown. Use ids returned by earlier tool results in follow-up calls. After run_code, explain the
+result; on errors, suggest a fix and offer to apply it with write_code."
+
+### Known limitations / incomplete
+- **Not tested** at all; tools also need the dashboard configuration above to be callable.
+- MagicPath designs were not re-fetched; only small UI additions were made using existing components and
+  theme tokens (approval banner details/preview/queue count, Notes authorship border + legend).
+- Whiteboard: arrows are straight lines (no elbow routing); concept maps/flowcharts can overlap labels for
+  very dense graphs; boundary maths approximates text elements as rectangles; Excalidraw undo isn't
+  explicitly captured for Tutor edits.
+- Notes: tags are per top-level block - learner edits *inside* a Tutor block keep the Tutor tag; headings
+  deeper than h3 are clamped to h3; links are flattened to text; block ids are positional+hash and
+  become stale if the learner edits between read and write (detected and reported, not guessed).
+- Code: selection/cursor context and targeted edits are only for the file currently open in the editor;
+  the 30s approval timeout can exceed a short dashboard tool timeout (configure >= 30s).
+- An approval waiting in the queue holds its Tutor tool call open until shown and answered.
+
+---
+
+## PHASE 2 (2026-11-17) - Performance / rendering efficiency (C5) - COMPLETE (code), NOT TESTED
+
+Addresses investigation defect **C5** (the waveform loop set React state every animation frame,
+re-rendering TutorCall -> Workspace -> Excalidraw/Monaco/TipTap ~60x/s while connected). Rendering
+only: no UI/design, schema, ElevenLabs config, prompt, dynamic-variable or tool-orchestration changes.
+All Phase 1 behaviour (link-state machine, reconnect, lease ownership, mic probe, interrupt) untouched.
+
+### Files
+- `TutorWaveform.tsx` (**new**), `TutorCall.tsx`, `Workspace.tsx`, `WhiteboardPanel.tsx`,
+  `CodeEditorPanel.tsx`, `NotesPanel.tsx` (all in `app/(routes)/study-room/session/[sessionId]/`).
+
+### Waveform isolation architecture
+- `TutorWaveform` (memo'd) owns the rAF loop and writes bar heights **directly to the DOM via refs** -
+  no React state at all, so animating re-renders nothing (not even itself). Per-bar writes are skipped
+  when a height is unchanged.
+- Loop runs only while `animated` (connected and speaking/listening - TutorCall's old `isAnimated`) **and**
+  `visible` (its container isn't `display:none` because a workspace tool is open). Otherwise bars rest
+  at 15%. rAF is cancelled on any change/unmount; the browser already pauses rAF in background tabs.
+- Data source switches via refs (no loop restart): output levels while Nova is audibly speaking, input
+  levels otherwise (an Interrupt shows the learner's input) - same rule as before. Getter calls are
+  wrapped so a conversation disappearing between frames just rests the bars.
+- Appearance unchanged: same 10 bars, classes, 15% floor, `transition-[height] duration-100`.
+- TutorCall: removed `levels` state, `rafRef`, `BAR_COUNT`, the inline `Waveform` and its effect.
+
+### React rendering optimizations
+- `Workspace` is `memo(forwardRef(...))`; its props (sessionId, userId, `setHasOpenTools`) are stable, so
+  TutorCall's renders (mode/status changes, messages, notices, interrupt) no longer reach it. Tool
+  handlers still see current Workspace state (they re-register their latest closure on Workspace's own
+  renders via the SDK's handler ref).
+- `useBreakpoint` stores the breakpoint, not the raw width -> window resizing re-renders the Workspace
+  only when crossing 768/1024px, not on every pixel. Same thresholds and SSR default.
+- `onApiReady` for the whiteboard is a stable `useCallback` (was an inline arrow).
+- Deliberately **not** memoized: Workspace's derived `visibleTools`/`overflowTools` (tiny arrays used only
+  in map), splitter/button handlers on native elements - no measurable benefit.
+
+### Whiteboard
+- `WhiteboardPanel` is `memo`'d; Excalidraw now gets stable `excalidrawAPI` and `onChange` callbacks
+  (Excalidraw's own `areEqual` shallow compare was failing on the inline arrows every render).
+- Debounced save goes through a latest-value `performSaveRef`, so saves still use current props.
+- `onChange` calls that can't change the saved payload (pointer move, scroll, selection) no longer reset
+  the save timer: skipped only if it's the **same elements array** and the same (count, version sum,
+  background). Array-identity is required because the Tutor's highlight tool replaces elements with
+  recoloured copies that keep their `version`. A failed save clears the signature, so the next
+  interaction retries exactly as before. Restore, AI diagrams, highlight, clear and autosave unchanged.
+
+### Code Editor
+- `memo(CodeEditorPanel)`; Monaco `options` hoisted to a module constant (`@monaco-editor/react` 4.7 calls
+  `updateOptions` whenever the object identity changes); `onChange` is a stable callback forwarding to the
+  latest handler (the library disposes/re-subscribes its content listener whenever `onChange` changes).
+  Content, cursor, selection, autosave, runs and Tutor read/write unchanged.
+
+### Notes
+- `memo(NotesPanel)`; TipTap extensions hoisted to module scope. TipTap 3.34's `useEditor` compares the
+  extensions array by element identity each render, and `.configure()` returns a new instance, so the
+  inline list caused `editor.setOptions()` on **every render** (i.e. ~60x/s before). Same extensions/config.
+- `shouldRerenderOnTransaction: false` stated explicitly (already TipTap 3's default - no behaviour change).
+- Debounced save from `onUpdate` goes through a latest-value `performSaveRef`. Tutor `appendBlock` /
+  `replaceContent` / `getPlainText` unchanged.
+
+### Audio / Phase 1 isolation
+- No conversation code touched: `useConversation` callbacks, `startSession`/`endSession`, reconnect, lease
+  heartbeat, mic probe and interrupt are exactly as in Phase 1. Workspace memoization can't restart the
+  conversation (ConversationProvider lives in StudyRoomTutorSession, above all of this).
+
+### Remaining performance concerns (not changed in Phase 2)
+- TutorCall still re-renders on real events (mode changes, each transcript message, notices) - cheap now
+  that Workspace is shielded; the chat list isn't virtualized (only matters for very long sessions).
+- Dragging a splitter re-renders Workspace per mouse move (panels are memo'd, so only the flex containers
+  update; Monaco relies on `automaticLayout`).
+- CodeEditorPanel re-renders on each keystroke (its own `localContent` state) - pre-existing; Monaco's
+  wrapper sees an identical `value` and does nothing.
+- `JSON.stringify` of all whiteboard elements on each debounced save - fine for normal boards, could be
+  costly for very large ones.
+- C6, C7, C8 (tool-reliability defects) still open - see below.
+
+### Before first use
+No schema change in Phase 2. (Phase 1's `npx convex dev` requirement still applies if not yet done.)
+
+### Exact starting point for Phase 3 (tool reliability)
+1. **C6** - `Workspace.tsx` handlers `whiteboardAddDiagram`, `codeWrite`, `noteCreate`, `noteRestructure`
+   return "ask me again" when the panel was just opened: make them await panel/ref readiness (e.g. a
+   promise resolved by the panel's ref/onApiReady, with a timeout) before acting.
+2. **C7** - `Workspace.tsx:requestApproval` has a single resolver/timer slot; concurrent approvals clobber
+   each other -> queue them.
+3. **C8** - overflow (not visible) panels are unmounted (`effectiveVisible` rendering), so their refs go
+   null and `get_workspace_context` reports them closed -> keep open panels mounted but hidden.
+4. ElevenLabs dashboard checks (P1/P2/P5): Conversation History termination reasons via
+   `studyRoomSessions.elevenlabsConversationId`; 8 client tools configured with response timeouts >= 30s.
+
+---
+
+## PHASE 1 (2026-11-17) - Audio stability & session management - COMPLETE (code), NOT TESTED
+
+Addresses investigation defects **C1, C2, C3, C4, C9, C10** from the 2026-11-17 AI Tutor
+investigation report. Not run/tested (per instruction). Tool orchestration (Workspace.tsx and the
+three panels) was deliberately **not** touched.
+
+### Files modified / added
+- `convex/schema.ts` - new table `studyRoomTutorLeases` (`studyRoomSessionId`, `userId`, `clientId`,
+  `expiresAt`, `updatedAt`; index `by_session`). Separate table so heartbeat writes don't invalidate
+  every query that reads `studyRoomSessions`.
+- `convex/StudyRoom.ts` - `AcquireTutorLease` (optional `force`), `RenewTutorLease`, `ReleaseTutorLease`,
+  helper `getTutorLease`, `TUTOR_LEASE_MS = 90s`; `EndStudyRoomSession` gained optional `clientId`
+  (no-op if a *different* tab holds the active lease; deletes the lease when the session ends);
+  `studyRoomTutorLeases` added to `SESSION_SCOPED_TABLES` (room-delete cascade).
+- `app/api/study-room/tutor/start/route.ts` - accepts `clientId`; calls `AcquireTutorLease` and returns
+  **409 `{code:"held_elsewhere"}`** instead of a token when another tab owns the session. No clientId ->
+  old behaviour.
+- `app/api/study-room/tutor/end/route.ts` - forwards `clientId` to `EndStudyRoomSession`.
+- `app/api/study-room/tutor/release/route.ts` (**new**) - sendBeacon target that releases the lease.
+- `app/(routes)/study-room/session/[sessionId]/StudyRoomTutorSession.tsx` - lease ownership, heartbeat,
+  BroadcastChannel, takeover UI, `requestFreshConnection`.
+- `app/(routes)/study-room/session/[sessionId]/TutorCall.tsx` - connection state machine, reconnect,
+  disconnect UI, error notices, mic probe cleanup, interrupt.
+
+### Connection lifecycle (C1 + C3)
+TutorCall no longer reads the SDK's `status` (which becomes `"error"` on *any* `onError`). It keeps its
+own `LinkState`: `idle -> connecting -> connected`, plus `reconnecting`, `disconnected`, `failed`
+(mirrored in `linkStateRef` so SDK callbacks never read stale state).
+- `onConnect` -> `connected`.
+- `onError` while connecting/reconnecting -> `failed` (with the SDK message). While `connected` it is
+  **logged + a dismissable non-blocking notice** (tool errors get their own wording); it never covers
+  the screen and never touches the live audio.
+- `onDisconnect` -> `disconnected` with a human-readable reason (`describeDisconnect`: agent ended it,
+  connection lost + message, `max_duration_exceeded`, closed). Ignored when *we* ended the
+  conversation (`intentionalEndRef`: End Session, reconnect, watchdog, unmount).
+- 25s connect watchdog: a start/reconnect that never connects becomes `failed` (also covers the
+  provider silently ignoring a start while an older one is still pending).
+- Status badge/footer now show Connecting / Reconnecting / Disconnected / Connection failed; "Listening
+  to you" is only possible while genuinely connected. Overlay shows only for reconnecting/disconnected/
+  failed, with the reason and "Nova isn't listening or speaking right now". Text input, waveform,
+  beforeunload beacon and the Interrupt button are all keyed off `linkState === "connected"`.
+- `onInterruption` is now registered (logged + ends a pending Interrupt, see C10).
+
+### Reconnection (C2)
+`handleReconnect`: guard against double clicks (`busyRef`) -> state `reconnecting` -> mark intentional
++ `conversation.endSession()` (old conversation torn down first) -> mic permission check (C9) ->
+`requestFreshConnection()` (POST `/tutor/start` again: **new token**, dynamic variables rebuilt
+server-side incl. the latest `conversation_history` from Convex and the resume greeting) ->
+`startConversation(fresh)` with the watchdog. Failure -> `failed` with a "Try again" button. The local
+transcript survives (TutorCall isn't remounted). The original join also fails over to this path: if the
+mount-time token was stale, "Try again" fetches a fresh one. If `/tutor/start` says another tab owns the
+session, the parent switches to the "open in another tab" screen.
+
+### Single active tab (C4)
+- Per-tab id `TAB_CLIENT_ID` (module scope, i.e. one per JS realm/tab; not sessionStorage because
+  "Duplicate tab" copies it).
+- On mount `StudyRoomTutorSession` acquires the lease **before** fetching a token. Not acquired ->
+  "This session is open in another tab" screen (no token, no microphone) with **Use this tab instead**
+  (force takeover), **Check again**, and a link to the room page (history/saved materials stay viewable).
+- Owner heartbeats every 20s (`RenewTutorLease`; fails only if *another* tab actively holds the lease,
+  otherwise re-establishes a missing/stale row - covers React Strict Mode's dev-only effect re-run
+  releasing it); `ok:false` -> state `lost` -> TutorCall unmounts ->
+  ConversationProvider ends that tab's conversation -> "This session moved to another tab".
+- BroadcastChannel `study-room-tutor`: `takeover` makes a same-browser owner re-check immediately;
+  `released` makes a waiting tab re-try acquiring.
+- Release: on unmount (`ReleaseTutorLease`) and on `pagehide` (sendBeacon -> `/tutor/release`).
+- Crashed/closed tab without release: lease expires after 90s, then any tab can acquire; takeover is
+  available immediately anyway.
+- Ending: only the owning tab renders TutorCall, so only it registers the beforeunload beacon / End
+  Session; both send `clientId`, and the server ignores an end request from a non-owner while another
+  tab holds an active lease. Closing/refreshing a non-owning tab can no longer abandon the session.
+
+### Microphone (C9)
+`ensureMicrophonePermission()`: if `navigator.permissions` reports microphone `granted`, **no stream is
+opened at all** (avoids switching Bluetooth headsets into their call profile for nothing); otherwise a
+probe `getUserMedia` stream is opened and **every track stopped immediately**. ElevenLabs opens/owns its
+own mic stream in `startSession` and releases it in `endSession` (which runs before every reconnect).
+Used by both Join and Reconnect.
+
+### Interrupt (C10)
+The installed SDK (`@elevenlabs/react` 1.13.0 / `@elevenlabs/client` 1.21.0) exposes **no client API to
+cancel the agent's current response** - the server only cuts a turn short when the learner takes the
+turn (voice barge-in or a typed message), reported as an `interruption` event. Implementation using only
+supported calls: `setVolume({volume:0})` silences Nova immediately, mic is unmuted if needed,
+`sendUserActivity()` signals the learner is taking the floor. Audio is restored (respecting the learner's
+own "mute Tutor audio" setting) on `onInterruption`, on the learner's next transcribed/typed turn
+(`onMessage` role user), or after Nova has been in `listening` mode for 1.2s (WebRTC mode comes from
+LiveKit's server-side active-speaker detection, so it's unaffected by the local volume). Button is
+disabled ("Stopped - your turn") while an interrupt is pending, so repeat clicks can't stack.
+
+### Remaining limitations / unresolved
+- **Interrupt is client-side silencing**: if the learner says nothing, the server still finishes
+  generating that (now silent) turn; its transcript still appears in the chat log. A true server-side
+  cancel needs an SDK/API capability that 1.21.0 doesn't have.
+- A pause > ~1.2s in the middle of Nova's interrupted reply could make the remainder audible again.
+- Lease takeover across *different devices* is detected only on the next heartbeat (<= 20s), so both
+  devices could be live for up to ~20s after a takeover. Same-browser takeovers are immediate.
+- Chrome's intensive timer throttling of long-hidden tabs (tabs *without* audio, e.g. sitting on the
+  Join screen) can delay heartbeats past 90s; that tab then just sees "moved to another tab" if someone
+  else took the lease.
+- `/tutor/start` still overwrites `elevenlabsConversationId` with the latest conversation (same as
+  before; one row per session, not a history).
+- Refreshing the *owning* tab still abandons the session (pre-existing behaviour, intentionally kept).
+- Not addressed (out of Phase 1 scope): C5 (60fps re-render of the whole workspace from the waveform
+  loop), C6/C7/C8 (tool first-call race, approval-slot race, unmounted overflow panels), P1/P2/P5 checks
+  in the ElevenLabs dashboard (max duration / silence timeout / tools configured).
+
+### Before first use
+Run `npx convex dev` (or deploy) so `studyRoomTutorLeases` and the new mutations exist.
+
+### Exact starting point for Phase 2
+Performance + tool reliability, in this order:
+1. **C5** - move the rAF waveform into its own small component (only running while visible) so
+   `setLevels` no longer re-renders TutorCall/Workspace/Excalidraw ~60x/s; `React.memo(Workspace)`;
+   stable `excalidrawAPI`/`onChange` callbacks in `WhiteboardPanel.tsx:122-125`.
+2. **C6** - `Workspace.tsx` tool handlers: await panel mount/ref readiness instead of returning "ask me
+   again" (`whiteboardAddDiagram`, `codeWrite`, `noteCreate`, `noteRestructure`).
+3. **C7** - queue approvals in `Workspace.tsx:requestApproval` (single resolver/timer slot today).
+4. **C8** - keep overflow panels mounted-but-hidden so refs/context stay valid.
+5. Dashboard verification (P1/P2/P5): check terminated conversations in ElevenLabs Conversation History
+   using `studyRoomSessions.elevenlabsConversationId`; confirm the 8 client tools + response timeouts
+   >= 30s.
 
 ---
 

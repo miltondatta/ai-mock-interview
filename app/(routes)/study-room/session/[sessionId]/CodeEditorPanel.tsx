@@ -1,7 +1,7 @@
 "use client"
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
-import Editor from "@monaco-editor/react"
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
+import Editor, { type OnMount } from "@monaco-editor/react"
 import { useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -10,14 +10,112 @@ import { CODE_LANGUAGE_OPTIONS, getLanguageOption, type CodeRunResult } from "./
 import SaveStatusBadge, { type SaveStatus } from "./SaveStatusBadge"
 import { retryAsync } from "./retryAsync"
 
+type MonacoEditor = Parameters<OnMount>[0]
+
+// Phase 4 / Milestone 3 - what the Tutor learns about a run.
+export type CodeRunStatus = "success" | "runtime_error" | "compile_error" | "timeout" | "failed" | "stopped"
+
+export interface CodeRunSummary {
+  status: CodeRunStatus
+  filename: string
+  language: string
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  compileOutput?: string
+  error?: string
+  signal?: string | null
+}
+
+export type CodeWriteMode = "replace" | "append" | "replace_selection" | "insert_at_cursor"
+
+export interface CodeWriteResult {
+  ok: boolean
+  message: string
+  filename?: string
+}
+
+export interface CodeContext {
+  filename: string
+  language: string
+  lineCount: number
+  // Numbered lines ("12| code"); the whole file when it fits, otherwise a
+  // window around the cursor (use read_code for the rest).
+  code: string
+  codeTruncated: boolean
+  selection?: { text: string; startLine: number; endLine: number }
+  cursor?: { line: number; column: number }
+  surroundingCode?: string
+  lastRun: CodeRunSummary | null
+  files: { filename: string; language: string }[]
+}
+
 export interface CodeEditorHandle {
-  writeCode: (args: { language?: string; content: string; mode: "replace" | "append"; filename?: string }) => string
+  // Phase 3 (C6) - files have loaded and there's an active file.
+  isReady: () => boolean
+  // Kept for compatibility with the original handle shape.
   readCode: () => { filename: string; language: string; content: string; lastRun: CodeRunResult | null } | null
+  getContext: () => CodeContext | null
+  readFile: (args: { filename?: string; startLine?: number; endLine?: number }) => {
+    ok: boolean
+    message: string
+    filename?: string
+    code?: string
+  }
+  // Content of the target (or active) file + whether it has a selection -
+  // lets Workspace decide on approval before writing.
+  inspectTarget: (filename?: string) => { filename: string; content: string; selectionText: string } | null
+  writeCode: (args: { language?: string; content: string; mode: CodeWriteMode; filename?: string }) => CodeWriteResult
+  runCode: (args: { filename?: string }) => Promise<CodeRunSummary>
 }
 
 interface CodeEditorPanelProps {
   sessionId: string
   userId: Id<"UserTable">
+  // Phase 4 - called after a run the *learner* started with the Run button
+  // (the Tutor's own runs return their result directly to the Tutor).
+  onLearnerRun?: (summary: CodeRunSummary) => void
+}
+
+const MAX_CONTEXT_CODE_CHARS = 6000
+const MAX_OUTPUT_CHARS = 3000
+
+function numberLines(lines: string[], firstLine: number) {
+  return lines.map((l, i) => `${firstLine + i}| ${l}`).join("\n")
+}
+
+function summarizeRun(result: CodeRunResult, filename: string, language: string, stopped = false): CodeRunSummary {
+  const compileOutput = result.compile?.stderr || result.compile?.stdout || ""
+  let status: CodeRunStatus
+  if (stopped) status = "stopped"
+  else if (result.error) status = "failed"
+  // Piston kills the process with SIGKILL when it exceeds the run timeout.
+  else if (result.signal === "SIGKILL") status = "timeout"
+  else if (result.compile?.stderr && result.exitCode !== 0) status = "compile_error"
+  else if (result.exitCode === 0) status = "success"
+  else status = "runtime_error"
+  return {
+    status,
+    filename,
+    language,
+    exitCode: result.exitCode ?? null,
+    stdout: (result.stdout ?? "").slice(0, MAX_OUTPUT_CHARS),
+    stderr: (result.stderr ?? "").slice(0, MAX_OUTPUT_CHARS),
+    ...(compileOutput ? { compileOutput: compileOutput.slice(0, MAX_OUTPUT_CHARS) } : {}),
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.signal ? { signal: result.signal } : {}),
+  }
+}
+
+// Phase 2 (C5) - hoisted: @monaco-editor/react calls editor.updateOptions()
+// whenever the `options` prop identity changes, so an inline object literal
+// re-applied every option on every render. Same values as before.
+const EDITOR_OPTIONS = {
+  minimap: { enabled: false },
+  fontSize: 13,
+  lineNumbers: "on" as const,
+  scrollBeyondLastLine: false,
+  automaticLayout: true,
 }
 
 const STARTER_SNIPPET: Record<string, string> = {
@@ -26,7 +124,7 @@ const STARTER_SNIPPET: Record<string, string> = {
 }
 
 const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(function CodeEditorPanel(
-  { sessionId, userId },
+  { sessionId, userId, onLearnerRun },
   ref
 ) {
   const sid = sessionId as Id<"studyRoomSessions">
@@ -52,6 +150,14 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
   // last saw (to detect a conflicting write from elsewhere).
   const lastSavedContentRef = useRef<Record<string, string>>({})
   const lastKnownUpdatedAtRef = useRef<Record<string, number>>({})
+  // Phase 4 - the live Monaco instance (selection/cursor context and
+  // targeted Tutor edits), and a synchronous "a run is in flight" guard so
+  // the Run button and a Tutor run_code can never execute concurrently.
+  const editorRef = useRef<MonacoEditor | null>(null)
+  const runningRef = useRef(false)
+  const handleEditorMount = useCallback<OnMount>((editorInstance) => {
+    editorRef.current = editorInstance
+  }, [])
 
   // Create a sensible default file the first time this session's Code
   // Editor is opened with nothing saved yet.
@@ -144,6 +250,15 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
     scheduleSave(activeFile._id, { content: text })
   }
 
+  // Phase 2 (C5) - @monaco-editor/react disposes and re-creates its
+  // content-change subscription whenever `onChange` changes identity, so the
+  // editor gets one stable callback that forwards to the latest handler
+  // (kept current during render, so it always sees the active file).
+  const handleEditorChangeRef = useRef(handleEditorChange)
+  // eslint-disable-next-line react-hooks/refs -- intentional latest-handler ref
+  handleEditorChangeRef.current = handleEditorChange
+  const stableEditorChange = useCallback((value: string | undefined) => handleEditorChangeRef.current(value), [])
+
   function handleLanguageChange(value: string) {
     if (!activeFile) return
     scheduleSave(activeFile._id, { language: value })
@@ -174,9 +289,14 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
     )
   }
 
-  async function handleRun() {
-    if (!activeFile || running) return
-    const fileId = activeFile._id
+  // Shared by the Run button and the Tutor's run_code (Phase 4). Execution
+  // always goes through the existing /api/study-room/code/run route - code
+  // only ever runs in its isolated sandbox (Piston), never in this app's
+  // server, with that route's language allow-list, size cap and timeouts.
+  // Resolves to `null` only when the learner pressed Stop.
+  async function executeRun(file: { _id: string; language: string }, content: string): Promise<CodeRunResult | null> {
+    const fileId = file._id
+    runningRef.current = true
     setRunning(true)
     setRunResult(null)
     setRunResultFileId(fileId)
@@ -186,7 +306,7 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
       const res = await fetch("/api/study-room/code/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: activeFile.language, content: activeContent }),
+        body: JSON.stringify({ language: file.language, content }),
         signal: controller.signal,
       })
       const data = await res.json()
@@ -206,14 +326,26 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
         stderr: result.stderr || result.error || "",
         exitCode: result.exitCode ?? undefined,
       }).catch((e) => console.error("Failed to record code run:", e))
+      return result
     } catch (e) {
       if ((e as Error)?.name !== "AbortError") {
-        setRunResult({ stdout: "", stderr: "", exitCode: null, error: "Execution was interrupted." })
+        const interrupted: CodeRunResult = { stdout: "", stderr: "", exitCode: null, error: "Execution was interrupted." }
+        setRunResult(interrupted)
+        return interrupted
       }
+      return null
     } finally {
+      runningRef.current = false
       setRunning(false)
       abortRef.current = null
     }
+  }
+
+  async function handleRun() {
+    if (!activeFile || runningRef.current) return
+    const file = activeFile
+    const result = await executeRun(file, activeContent)
+    onLearnerRun?.(summarizeRun(result ?? { stdout: "", stderr: "", exitCode: null }, file.filename, file.language, !result))
   }
 
   function handleStop() {
@@ -230,19 +362,34 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
       .catch(() => undefined)
   }
 
+  // --- Phase 4 / Milestone 3: Tutor-facing Code Editor operations ----------
+
+  function findTarget(filename?: string) {
+    if (!files || files.length === 0) return null
+    return (filename ? files.find((f) => f.filename === filename) : null) ?? activeFile ?? files[0]
+  }
+
+  function contentOf(file: { _id: string; content: string }) {
+    return localContent[file._id] ?? file.content
+  }
+
+  // The Monaco model only reflects the *active* file, so selection/cursor
+  // and targeted edits are only available for it.
+  function liveEditorFor(fileId: string) {
+    const instance = editorRef.current
+    return instance && activeFile && activeFile._id === fileId && instance.getModel() ? instance : null
+  }
+
+  function lastRunSummary(file: NonNullable<typeof activeFile>): CodeRunSummary | null {
+    const run = getDisplayedRun(file)
+    return run ? summarizeRun(run, file.filename, file.language) : null
+  }
+
   useImperativeHandle(
     ref,
     () => ({
-      writeCode({ language, content, mode, filename }) {
-        if (!files || files.length === 0) return "The Code Editor isn't open yet."
-        const target = (filename ? files.find((f) => f.filename === filename) : null) ?? activeFile ?? files[0]
-        const nextContent = mode === "append" ? `${localContent[target._id] ?? target.content}\n${content}` : content
-        setLocalContent((prev) => ({ ...prev, [target._id]: nextContent }))
-        setActiveFileId(target._id)
-        performSave(target._id, { content: nextContent, ...(language ? { language } : {}) })
-        return mode === "append"
-          ? `Appended code to ${target.filename}.`
-          : `Replaced the contents of ${target.filename}.`
+      isReady() {
+        return !!files && files.length > 0 && !!activeFile
       },
       readCode() {
         if (!activeFile) return null
@@ -252,6 +399,147 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
           content: activeContent,
           lastRun: getDisplayedRun(activeFile),
         }
+      },
+      getContext() {
+        if (!activeFile || !files) return null
+        const lines = activeContent.split("\n")
+        const instance = liveEditorFor(activeFile._id)
+        const position = instance?.getPosition() ?? null
+        const sel = instance?.getSelection() ?? null
+        const model = instance?.getModel() ?? null
+        const cursorLine = position?.lineNumber ?? 1
+
+        let code = numberLines(lines, 1)
+        let codeTruncated = false
+        if (code.length > MAX_CONTEXT_CODE_CHARS) {
+          // Window around the cursor instead of the head of the file.
+          const from = Math.max(1, cursorLine - 60)
+          const to = Math.min(lines.length, cursorLine + 60)
+          code = numberLines(lines.slice(from - 1, to), from).slice(0, MAX_CONTEXT_CODE_CHARS)
+          codeTruncated = true
+        }
+        const surroundFrom = Math.max(1, cursorLine - 8)
+        const surroundTo = Math.min(lines.length, cursorLine + 8)
+        return {
+          filename: activeFile.filename,
+          language: activeFile.language,
+          lineCount: lines.length,
+          code,
+          codeTruncated,
+          ...(sel && model && !sel.isEmpty()
+            ? {
+                selection: {
+                  text: model.getValueInRange(sel).slice(0, 3000),
+                  startLine: sel.startLineNumber,
+                  endLine: sel.endLineNumber,
+                },
+              }
+            : {}),
+          ...(position ? { cursor: { line: position.lineNumber, column: position.column } } : {}),
+          ...(position ? { surroundingCode: numberLines(lines.slice(surroundFrom - 1, surroundTo), surroundFrom) } : {}),
+          lastRun: lastRunSummary(activeFile),
+          files: files.map((f) => ({ filename: f.filename, language: f.language })),
+        }
+      },
+      readFile({ filename, startLine, endLine }) {
+        const target = findTarget(filename)
+        if (!target) return { ok: false, message: "The Code Editor isn't open yet." }
+        if (filename && target.filename !== filename) return { ok: false, message: `There's no file named "${filename}".` }
+        const lines = contentOf(target).split("\n")
+        const from = Math.max(1, Math.floor(startLine ?? 1))
+        const to = Math.min(lines.length, Math.floor(endLine ?? Math.min(lines.length, from + 399)), from + 399)
+        return {
+          ok: true,
+          message: `Lines ${from}-${to} of ${lines.length} in ${target.filename}.`,
+          filename: target.filename,
+          code: numberLines(lines.slice(from - 1, to), from).slice(0, 12000),
+        }
+      },
+      inspectTarget(filename) {
+        const target = findTarget(filename)
+        if (!target) return null
+        const instance = liveEditorFor(target._id)
+        const sel = instance?.getSelection() ?? null
+        const model = instance?.getModel() ?? null
+        return {
+          filename: target.filename,
+          content: contentOf(target),
+          selectionText: sel && model && !sel.isEmpty() ? model.getValueInRange(sel) : "",
+        }
+      },
+      writeCode({ language, content, mode, filename }) {
+        const target = findTarget(filename)
+        if (!target) return { ok: false, message: "The Code Editor isn't open yet." }
+        if (filename && target.filename !== filename) return { ok: false, message: `There's no file named "${filename}".` }
+        const validLanguage = language && CODE_LANGUAGE_OPTIONS.some((o) => o.value === language) ? language : undefined
+        const instance = liveEditorFor(target._id)
+        const model = instance?.getModel() ?? null
+
+        // Targeted edit on the live editor: only the affected range changes,
+        // so the learner's cursor/selection elsewhere, scroll position and
+        // undo history (Ctrl+Z reverts the Tutor's edit) are preserved.
+        if (instance && model) {
+          let range: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number } =
+            model.getFullModelRange()
+          let text = content
+          if (mode === "append") {
+            const end = model.getFullModelRange().getEndPosition()
+            range = { startLineNumber: end.lineNumber, startColumn: end.column, endLineNumber: end.lineNumber, endColumn: end.column }
+            text = `${model.getValue().endsWith("\n") || model.getValue() === "" ? "" : "\n"}${content}`
+          } else if (mode === "replace_selection") {
+            const sel = instance.getSelection()
+            if (!sel || sel.isEmpty()) return { ok: false, message: "No code is selected in the editor." }
+            range = sel
+          } else if (mode === "insert_at_cursor") {
+            const pos = instance.getPosition()
+            if (!pos) return { ok: false, message: "The editor has no cursor position." }
+            range = { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column }
+          }
+          instance.pushUndoStop()
+          instance.executeEdits("ai-tutor", [{ range, text, forceMoveMarkers: true }])
+          instance.pushUndoStop()
+          // The edit already updated localContent via onChange and scheduled
+          // a save; replace that with one immediate save (content + any
+          // language change together, so the two can't conflict).
+          const next = model.getValue()
+          if (saveTimersRef.current[target._id]) clearTimeout(saveTimersRef.current[target._id])
+          setLocalContent((prev) => ({ ...prev, [target._id]: next }))
+          performSave(target._id, { content: next, ...(validLanguage ? { language: validLanguage } : {}) })
+        } else {
+          if (mode === "replace_selection" || mode === "insert_at_cursor") {
+            return { ok: false, message: `${target.filename} isn't the open file, so it has no selection or cursor.` }
+          }
+          const current = contentOf(target)
+          const next = mode === "append" ? `${current}${current.endsWith("\n") || !current ? "" : "\n"}${content}` : content
+          setLocalContent((prev) => ({ ...prev, [target._id]: next }))
+          setActiveFileId(target._id)
+          performSave(target._id, { content: next, ...(validLanguage ? { language: validLanguage } : {}) })
+        }
+        const verb =
+          mode === "append"
+            ? "Appended code to"
+            : mode === "replace_selection"
+              ? "Replaced the selected code in"
+              : mode === "insert_at_cursor"
+                ? "Inserted code at the cursor in"
+                : "Replaced the contents of"
+        return { ok: true, message: `${verb} ${target.filename}.`, filename: target.filename }
+      },
+      async runCode({ filename }) {
+        const target = findTarget(filename)
+        if (!target) {
+          return { status: "failed", filename: filename ?? "", language: "", exitCode: null, stdout: "", stderr: "", error: "The Code Editor isn't open yet." }
+        }
+        if (runningRef.current) {
+          return { status: "failed", filename: target.filename, language: target.language, exitCode: null, stdout: "", stderr: "", error: "Code is already running - wait for it to finish." }
+        }
+        const content = contentOf(target)
+        if (!content.trim()) {
+          return { status: "failed", filename: target.filename, language: target.language, exitCode: null, stdout: "", stderr: "", error: "The file is empty." }
+        }
+        setActiveFileId(target._id)
+        const result = await executeRun(target, content)
+        return summarizeRun(result ?? { stdout: "", stderr: "", exitCode: null }, target.filename, target.language, !result)
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -348,15 +636,10 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
           height="100%"
           language={languageOption.monacoLanguage}
           value={activeContent}
-          onChange={handleEditorChange}
+          onChange={stableEditorChange}
+          onMount={handleEditorMount}
           theme="light"
-          options={{
-            minimap: { enabled: false },
-            fontSize: 13,
-            lineNumbers: "on",
-            scrollBeyondLastLine: false,
-            automaticLayout: true,
-          }}
+          options={EDITOR_OPTIONS}
         />
       </div>
 
@@ -397,4 +680,6 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
   )
 })
 
-export default CodeEditorPanel
+// Phase 2 - sessionId/userId (and the ref) are stable, so Workspace
+// re-renders no longer re-render Monaco's wrapper.
+export default memo(CodeEditorPanel)

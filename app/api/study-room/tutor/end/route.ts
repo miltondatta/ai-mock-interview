@@ -33,11 +33,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Session not found." }, { status: 404 });
   }
 
+  // Phase 1 - the closing tab's Tutor lease id. EndStudyRoomSession ignores
+  // the request if a *different* tab holds the active lease, so closing a
+  // non-owning tab can never end the session that's live elsewhere.
+  const clientId = typeof body?.clientId === "string" ? body.clientId : undefined;
+
   try {
     await convexClient.mutation(api.StudyRoom.EndStudyRoomSession, {
       userId: convexUser._id,
       sessionId: sessionId as Id<"studyRoomSessions">,
       reason: "abandoned",
+      ...(clientId ? { clientId } : {}),
     });
     return NextResponse.json({ ok: true });
   } catch (e) {

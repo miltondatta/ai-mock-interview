@@ -664,4 +664,19 @@ export default defineSchema({
       createdAt: v.number(),
     })
       .index('by_session', ['studyRoomSessionId']),
+
+    // Phase 1 (audio stability) - single-active-tab lease for a session's
+    // live Tutor. At most one row per session. `clientId` is a per-browser-tab
+    // id; the owning tab renews `expiresAt` on a heartbeat, so a tab that
+    // crashes or closes without releasing simply lets the lease go stale.
+    // Kept in its own table (not on studyRoomSessions) so the frequent
+    // heartbeat writes don't invalidate every query that reads the session.
+    studyRoomTutorLeases: defineTable({
+      studyRoomSessionId: v.id('studyRoomSessions'),
+      userId: v.id('UserTable'),
+      clientId: v.string(),
+      expiresAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_session', ['studyRoomSessionId']),
 });

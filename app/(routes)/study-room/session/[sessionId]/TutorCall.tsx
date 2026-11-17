@@ -22,6 +22,9 @@ import {
   Code2,
   NotebookPen,
   Network,
+  Loader2,
+  AlertTriangle,
+  Info,
 } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -29,36 +32,74 @@ import { UserDetailContext } from "@/context/UserDetailContext"
 import type { RoomContext, TranscriptMessage } from "./types"
 import type { TutorConnection } from "./StudyRoomTutorSession"
 import Workspace, { type WorkspaceHandle } from "./Workspace"
+import TutorWaveform from "./TutorWaveform"
 import type { WorkspaceTool } from "./workspaceTypes"
 
+type HookProps = NonNullable<Parameters<typeof useConversation>[0]>
+type DisconnectDetails = Parameters<NonNullable<HookProps["onDisconnect"]>>[0]
 type AgentLanguage = NonNullable<
   NonNullable<NonNullable<Parameters<ReturnType<typeof useConversation>["startSession"]>[0]>["overrides"]>["agent"]
 >["language"]
 
 const LANGUAGE_OVERRIDE_ENABLED = process.env.NEXT_PUBLIC_ELEVENLABS_LANGUAGE_OVERRIDE_ENABLED === "true"
-const BAR_COUNT = 10
+// A start/reconnect attempt that hasn't connected by then is treated as failed
+// (also covers the SDK silently ignoring a start while an older one is pending).
+const CONNECT_TIMEOUT_MS = 25_000
+// After an Interrupt, Nova's audio stays silenced until her interrupted turn
+// is over: the learner takes the floor (voice/text), the server reports an
+// interruption, or she has been quiet ("listening") for this long.
+const INTERRUPT_SETTLE_MS = 1_200
+const NOTICE_MS = 6_000
+
+// Phase 1 (C1/C3) - the Tutor's real connection lifecycle, tracked here
+// instead of reading the SDK's `status`, which flips to "error" on *any* SDK
+// error (even a non-fatal tool failure while audio keeps playing) and shows
+// a dropped connection as plain "disconnected".
+type LinkState = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected" | "failed"
 
 interface TutorCallProps {
   sessionId: string
   room: RoomContext
   connection: TutorConnection
+  // Phase 1 (C4) - this tab's Tutor lease id (see StudyRoomTutorSession).
+  clientId: string
+  // Phase 1 (C2) - fetches a brand-new token + rebuilt dynamic variables.
+  requestFreshConnection: () => Promise<TutorConnection>
 }
 
-function Waveform({ levels, active }: { levels: number[]; active: boolean }) {
-  return (
-    <div className="flex h-7 items-center justify-center gap-[3px]">
-      {levels.map((level, i) => (
-        <span
-          key={i}
-          className="w-[3px] rounded-full bg-primary transition-[height] duration-100"
-          style={{ height: `${active ? Math.max(15, level) : 15}%` }}
-        />
-      ))}
-    </div>
-  )
+function describeDisconnect(details: DisconnectDetails): string {
+  if (details.reason === "error") {
+    if (details.context?.type === "max_duration_exceeded") {
+      return "This conversation reached Nova's maximum length. Reconnect to keep going - everything so far is saved."
+    }
+    return details.message ? `The connection to Nova was lost (${details.message}).` : "The connection to Nova was lost."
+  }
+  if (details.reason === "agent") {
+    const why = details.closeReason || details.context?.reason
+    return why ? `Nova ended the conversation (${why}).` : "Nova ended the conversation."
+  }
+  return "The conversation was closed."
 }
 
-function TutorCall({ sessionId, room, connection }: TutorCallProps) {
+// Phase 1 (C9) - confirms microphone permission without leaving a stream
+// running. If the browser already reports permission as granted, no stream
+// is opened at all (avoids needlessly flipping Bluetooth headsets into their
+// call profile); otherwise a short probe is opened and every track is
+// stopped straight away. ElevenLabs opens and owns its own microphone stream
+// inside startSession() and releases it on endSession().
+async function ensureMicrophonePermission(): Promise<void> {
+  try {
+    const permission = await navigator.permissions?.query({ name: "microphone" as PermissionName })
+    if (permission?.state === "granted") return
+  } catch {
+    // "microphone" isn't queryable in every browser (e.g. Firefox) - fall
+    // through to the probe.
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  stream.getTracks().forEach((track) => track.stop())
+}
+
+function TutorCall({ sessionId, room, connection, clientId, requestFreshConnection }: TutorCallProps) {
   const router = useRouter()
   const { userDetail } = useContext(UserDetailContext)
   const userId: Id<"UserTable"> | undefined = userDetail?._id
@@ -80,17 +121,66 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
   const [draft, setDraft] = useState("")
   const [isEnding, setIsEnding] = useState(false)
   const [audioMuted, setAudioMuted] = useState(false)
-  const [levels, setLevels] = useState<number[]>(() => Array(BAR_COUNT).fill(15))
   const [hasOpenTools, setHasOpenTools] = useState(false)
+  const [linkState, setLinkStateValue] = useState<LinkState>("idle")
+  const [activeConnection, setActiveConnection] = useState<TutorConnection>(connection)
+  const [connectionIssue, setConnectionIssue] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [interrupting, setInterrupting] = useState(false)
 
   const messageCounter = useRef(0)
   const pendingTextSourceRef = useRef(false)
-  const rafRef = useRef<number | null>(null)
   const workspaceRef = useRef<WorkspaceHandle>(null)
+  // Refs mirror state that SDK callbacks read, so a callback firing between
+  // renders never acts on a stale value.
+  const linkStateRef = useRef<LinkState>("idle")
+  const interruptingRef = useRef(false)
+  const audioMutedRef = useRef(false)
+  // True while *we* are ending a conversation (End Session, reconnect,
+  // timeout, unmount) - its onDisconnect is then expected, not a failure.
+  const intentionalEndRef = useRef(false)
+  // Join/reconnect in flight - blocks double clicks from starting twice.
+  const busyRef = useRef(false)
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function setLinkState(next: LinkState) {
+    linkStateRef.current = next
+    setLinkStateValue(next)
+  }
+
+  function clearWatchdog() {
+    if (watchdogRef.current) clearTimeout(watchdogRef.current)
+    watchdogRef.current = null
+  }
+
+  function failConnection(message: string) {
+    clearWatchdog()
+    setThinking(false)
+    setConnectionIssue(message)
+    setLinkState("failed")
+  }
+
+  function showNotice(message: string) {
+    setNotice(message)
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    noticeTimerRef.current = setTimeout(() => setNotice(null), NOTICE_MS)
+  }
+
+  useEffect(() => {
+    return () => {
+      // Unmounting (navigation, or the tab lost its lease) - ConversationProvider
+      // ends the conversation itself; its disconnect is expected.
+      intentionalEndRef.current = true
+      if (watchdogRef.current) clearTimeout(watchdogRef.current)
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    }
+  }, [])
 
   // Seed the local transcript from persisted history exactly once (a
   // resumed session's prior turns), so new live turns append after it
-  // instead of being overwritten by every Convex refetch.
+  // instead of being overwritten by every Convex refetch. It also stays in
+  // place across a reconnect, since this component isn't remounted.
   useEffect(() => {
     if (historyLoaded || history === undefined) return
     setMessages(
@@ -114,7 +204,46 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
     }
   }
 
+  // --- Interrupt (C10) ------------------------------------------------------
+  // The installed SDK (@elevenlabs/react 1.13 / @elevenlabs/client 1.21) has
+  // no client call that cancels the agent's current response; the server
+  // only cuts a response short when the learner takes the turn (barge-in by
+  // voice or a typed message), which it reports as an `interruption` event.
+  // So Interrupt = silence Nova's playback immediately (setVolume), make
+  // sure the mic is live and signal learner activity (sendUserActivity) so
+  // the learner can speak or type at once; audio is restored as soon as her
+  // interrupted turn is over (see finishInterrupt's callers).
+  function handleInterrupt() {
+    if (interruptingRef.current || linkStateRef.current !== "connected") return
+    interruptingRef.current = true
+    setInterrupting(true)
+    conversation.setVolume({ volume: 0 })
+    if (conversation.isMuted) conversation.setMuted(false)
+    conversation.sendUserActivity()
+  }
+
+  // Restores Nova's audio (respecting the learner's own "mute Tutor audio"
+  // choice) for her next turn.
+  function finishInterrupt() {
+    if (!interruptingRef.current) return
+    interruptingRef.current = false
+    setInterrupting(false)
+    conversation.setVolume({ volume: audioMutedRef.current ? 0 : 1 })
+  }
+
+  // The conversation is gone - nothing to restore on it (a new conversation
+  // starts at full volume; the mute preference is re-applied on connect).
+  function resetInterrupt() {
+    interruptingRef.current = false
+    setInterrupting(false)
+  }
+
   const conversation = useConversation({
+    onConnect: () => {
+      clearWatchdog()
+      setConnectionIssue(null)
+      setLinkState("connected")
+    },
     onMessage: ({ message, role }) => {
       const isLearner = role === "user"
       const source: "voice" | "text" | undefined = isLearner
@@ -123,6 +252,9 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
           : "voice"
         : undefined
       pendingTextSourceRef.current = false
+
+      // The learner has taken the turn - Nova's next reply should be heard.
+      if (isLearner) finishInterrupt()
 
       setMessages((prev) => [
         ...prev,
@@ -137,8 +269,30 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
       setThinking(isLearner)
       persistMessage(isLearner ? "learner" : "tutor", message, source)
     },
-    onError: (message, context) =>
-      console.error("Study Room Tutor error:", message, context, "conversationId:", getSafeConversationId()),
+    onInterruption: (event) => {
+      console.log("Study Room Tutor interrupted - event:", event?.event_id, "conversationId:", getSafeConversationId())
+      finishInterrupt()
+    },
+    // C1 - errors no longer imply a dead connection. While a start/reconnect
+    // is in flight an error means that attempt failed; during a live
+    // conversation it's logged and surfaced as a dismissable notice, and a
+    // genuinely dropped connection is reported by onDisconnect instead.
+    onError: (message, context) => {
+      console.error("Study Room Tutor error:", message, context, "conversationId:", getSafeConversationId())
+      const phase = linkStateRef.current
+      if (phase === "connecting" || phase === "reconnecting") {
+        failConnection(message ? `Couldn't connect to Nova (${message}).` : "Couldn't connect to Nova.")
+        return
+      }
+      if (phase !== "connected") return
+      const isToolError = !!context && typeof context === "object" && "clientToolName" in context
+      showNotice(
+        isToolError
+          ? "A workspace action didn't complete. You can ask Nova to try again."
+          : "Nova ran into a temporary problem, but the conversation is still active."
+      )
+    },
+    // C3 - a real disconnect now changes what the learner sees.
     onDisconnect: (details) => {
       const log = details.reason === "error" ? console.error : console.log
       log(
@@ -148,6 +302,18 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
         "conversationId:",
         getSafeConversationId()
       )
+      clearWatchdog()
+      resetInterrupt()
+      setThinking(false)
+      if (intentionalEndRef.current) return
+      const phase = linkStateRef.current
+      if (phase === "failed") return
+      if (phase === "connecting" || phase === "reconnecting") {
+        failConnection(describeDisconnect(details))
+        return
+      }
+      setConnectionIssue(describeDisconnect(details))
+      setLinkState("disconnected")
     },
   })
 
@@ -155,87 +321,126 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
     if (conversation.mode === "speaking") setThinking(false)
   }, [conversation.mode])
 
-  // Real voice-activity bars from the SDK's own frequency data - input while
-  // the learner is talking, output while the Tutor is talking. Not a fake
-  // CSS animation.
+  // Interrupt fallback: once Nova has gone quiet after an Interrupt, give
+  // her audio back for her next turn.
   useEffect(() => {
-    if (conversation.status !== "connected") {
-      setLevels(Array(BAR_COUNT).fill(15))
-      return
-    }
-    function tick() {
-      const data =
-        conversation.mode === "speaking" ? conversation.getOutputByteFrequencyData() : conversation.getInputByteFrequencyData()
-      const step = Math.max(1, Math.floor(data.length / BAR_COUNT))
-      const next: number[] = []
-      for (let i = 0; i < BAR_COUNT; i++) {
-        next.push(Math.round(((data[i * step] ?? 0) / 255) * 100))
-      }
-      setLevels(next)
-      rafRef.current = requestAnimationFrame(tick)
-    }
-    rafRef.current = requestAnimationFrame(tick)
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
-    // conversation's action methods (getInputByteFrequencyData etc.) are
-    // documented as stable references, so only status/mode need to be
-    // tracked here - including the whole `conversation` object would
-    // restart this loop on every render.
+    if (!interrupting || conversation.mode !== "listening") return
+    const timer = setTimeout(finishInterrupt, INTERRUPT_SETTLE_MS)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversation.status, conversation.mode])
+  }, [interrupting, conversation.mode])
+
+  // A (re)connected conversation starts at full volume - re-apply the
+  // learner's "mute Tutor audio" choice.
+  useEffect(() => {
+    if (linkState === "connected" && audioMutedRef.current) conversation.setVolume({ volume: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkState])
+
+  // Phase 2 (C5) - the voice-activity bars now live in <TutorWaveform>,
+  // which animates them via refs without any React state, so they no longer
+  // re-render this component (and the Workspace under it) every frame.
 
   // Mark the session ended if the learner closes/refreshes the tab instead
   // of clicking End Session, mirroring InterviewCall's beforeunload handler.
+  // Only this (lease-owning) tab ever renders TutorCall, and the request
+  // carries its lease id - the server ignores it if another tab holds the
+  // active lease (C4).
   useEffect(() => {
-    if (conversation.status !== "connected") return
+    if (linkState !== "connected") return
     const handleUnload = () => {
       navigator.sendBeacon?.(
         "/api/study-room/tutor/end",
-        new Blob([JSON.stringify({ sessionId })], { type: "application/json" })
+        new Blob([JSON.stringify({ sessionId, clientId })], { type: "application/json" })
       )
     }
     window.addEventListener("beforeunload", handleUnload)
     return () => window.removeEventListener("beforeunload", handleUnload)
-  }, [conversation.status, sessionId])
+  }, [linkState, sessionId, clientId])
 
-  // Gesture-gated, like InterviewCall.tsx - getUserMedia must follow a real
+  function startConversation(conn: TutorConnection) {
+    intentionalEndRef.current = false
+    clearWatchdog()
+    watchdogRef.current = setTimeout(() => {
+      const phase = linkStateRef.current
+      if (phase === "connecting" || phase === "reconnecting") {
+        intentionalEndRef.current = true
+        conversation.endSession()
+        failConnection("Couldn't reach Nova. Check your connection and try again.")
+      }
+    }, CONNECT_TIMEOUT_MS)
+    conversation.startSession({
+      conversationToken: conn.conversationToken,
+      dynamicVariables: conn.dynamicVariables,
+      overrides: {
+        agent: {
+          firstMessage: conn.firstMessage,
+          ...(LANGUAGE_OVERRIDE_ENABLED ? { language: conn.language as AgentLanguage } : {}),
+        },
+      },
+    })
+  }
+
+  // Gesture-gated, like InterviewCall.tsx - the microphone must follow a real
   // click (not a mount effect) so React Strict Mode's dev-only double-mount
   // never starts and immediately tears down a session.
   const handleJoin = async () => {
-    if (isJoining) return
+    if (busyRef.current) return
+    busyRef.current = true
     setIsJoining(true)
     setJoinError(null)
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true })
-      conversation.startSession({
-        conversationToken: connection.conversationToken,
-        dynamicVariables: connection.dynamicVariables,
-        overrides: {
-          agent: {
-            firstMessage: connection.firstMessage,
-            ...(LANGUAGE_OVERRIDE_ENABLED ? { language: connection.language as AgentLanguage } : {}),
-          },
-        },
-      })
-      setHasJoined(true)
+      await ensureMicrophonePermission()
     } catch (e) {
       console.error("Failed to join Study Room session:", e)
       setJoinError("Unable to access your microphone. Please allow microphone access and try again.")
-    } finally {
+      busyRef.current = false
       setIsJoining(false)
+      return
     }
+    setLinkState("connecting")
+    setHasJoined(true)
+    startConversation(activeConnection)
+    busyRef.current = false
+    setIsJoining(false)
   }
 
-  function handleInterrupt() {
-    if (conversation.isMuted) conversation.setMuted(false)
-    conversation.sendUserActivity()
+  // C2 - a genuine reconnect: end what's left of the old conversation, get a
+  // brand-new token (the original one is single-use), whose freshly rebuilt
+  // dynamic variables carry the saved conversation history so Nova resumes
+  // with context, then start exactly one new conversation.
+  const handleReconnect = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setIsJoining(true)
+    resetInterrupt()
+    setThinking(false)
+    setConnectionIssue(null)
+    setLinkState("reconnecting")
+    intentionalEndRef.current = true
+    clearWatchdog()
+    conversation.endSession()
+    try {
+      await ensureMicrophonePermission()
+      const fresh = await requestFreshConnection()
+      if (linkStateRef.current !== "reconnecting") return
+      setActiveConnection(fresh)
+      startConversation(fresh)
+    } catch (e) {
+      console.error("Failed to reconnect Study Room Tutor:", e)
+      failConnection(
+        e instanceof Error && e.message ? e.message : "Couldn't reconnect to Nova. Please try again."
+      )
+    } finally {
+      busyRef.current = false
+      setIsJoining(false)
+    }
   }
 
   function handleSendText(e: React.FormEvent) {
     e.preventDefault()
     const text = draft.trim()
-    if (!text || conversation.status !== "connected") return
+    if (!text || linkState !== "connected") return
     pendingTextSourceRef.current = true
     conversation.sendUserMessage(text)
     setDraft("")
@@ -245,8 +450,11 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
     if (isEnding || !userId) return
     setIsEnding(true)
     try {
+      intentionalEndRef.current = true
+      clearWatchdog()
+      resetInterrupt()
       conversation.endSession()
-      await endSessionMutation({ userId, sessionId: sessionId as Id<"studyRoomSessions"> })
+      await endSessionMutation({ userId, sessionId: sessionId as Id<"studyRoomSessions">, clientId })
       router.push(`/study-room/session/${sessionId}`)
     } catch (e) {
       console.error(e)
@@ -255,19 +463,27 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
     }
   }
 
-  const status = conversation.status
+  const isConnected = linkState === "connected"
   const statusMeta =
-    status === "connecting"
+    linkState === "connecting"
       ? { label: "Connecting", badge: "bg-muted text-muted-foreground" }
-      : status === "error"
-        ? { label: "Connection lost", badge: "bg-destructive/10 text-destructive" }
-        : thinking
-          ? { label: "Thinking", badge: "bg-muted text-muted-foreground" }
-          : conversation.mode === "speaking"
-            ? { label: "Speaking", badge: "bg-primary/10 text-primary" }
-            : { label: "Listening to you", badge: "bg-success/15 text-success" }
+      : linkState === "reconnecting"
+        ? { label: "Reconnecting", badge: "bg-muted text-muted-foreground" }
+        : linkState === "disconnected"
+          ? { label: "Disconnected", badge: "bg-destructive/10 text-destructive" }
+          : linkState === "failed"
+            ? { label: "Connection failed", badge: "bg-destructive/10 text-destructive" }
+            : !isConnected
+              ? { label: "Not connected", badge: "bg-muted text-muted-foreground" }
+              : interrupting
+                ? { label: "Your turn", badge: "bg-success/15 text-success" }
+                : thinking
+                  ? { label: "Thinking", badge: "bg-muted text-muted-foreground" }
+                  : conversation.mode === "speaking"
+                    ? { label: "Speaking", badge: "bg-primary/10 text-primary" }
+                    : { label: "Listening to you", badge: "bg-success/15 text-success" }
 
-  const isAnimated = status === "connected" && (conversation.mode === "speaking" || conversation.mode === "listening")
+  const isAnimated = isConnected && (conversation.mode === "speaking" || conversation.mode === "listening")
 
   // --- Join screen --------------------------------------------------------
   if (!hasJoined) {
@@ -297,8 +513,8 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
     )
   }
 
-  // --- Connection-lost overlay ---------------------------------------------
-  const showReconnectOverlay = status === "error"
+  // --- Connection overlay (reconnecting / disconnected / failed) -----------
+  const showConnectionOverlay = linkState === "reconnecting" || linkState === "disconnected" || linkState === "failed"
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
@@ -330,24 +546,59 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
       </header>
 
       <div className="relative flex min-h-0 flex-1">
-        {showReconnectOverlay && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 backdrop-blur-sm">
-            <div className="mx-4 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-md">
-              <div className="flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-                <WifiOff className="size-6" />
-              </div>
-              <h2 className="text-base font-bold text-foreground">Connection lost</h2>
-              <p className="text-sm text-muted-foreground">
-                Your progress is saved. Reconnect to continue this session with Nova.
-              </p>
+        {notice && isConnected && (
+          <div className="absolute inset-x-0 top-3 z-10 flex justify-center px-4">
+            <div className="flex max-w-md items-start gap-2 rounded-xl border border-border bg-card px-3.5 py-2.5 text-sm text-foreground shadow-md">
+              <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <span className="flex-1">{notice}</span>
               <button
                 type="button"
-                onClick={handleJoin}
-                disabled={isJoining}
-                className="mt-1 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => setNotice(null)}
+                aria-label="Dismiss"
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
               >
-                <Wifi className="size-4" /> {isJoining ? "Reconnecting..." : "Reconnect"}
+                <X className="size-3.5" />
               </button>
+            </div>
+          </div>
+        )}
+
+        {showConnectionOverlay && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 backdrop-blur-sm">
+            <div className="mx-4 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-md">
+              {linkState === "reconnecting" ? (
+                <>
+                  <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <Loader2 className="size-6 animate-spin" />
+                  </div>
+                  <h2 className="text-base font-bold text-foreground">Reconnecting to Nova...</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Getting a fresh connection. Your conversation so far is kept.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                    {linkState === "failed" ? <AlertTriangle className="size-6" /> : <WifiOff className="size-6" />}
+                  </div>
+                  <h2 className="text-base font-bold text-foreground">
+                    {linkState === "failed" ? "Couldn't connect to Nova" : "Nova is disconnected"}
+                  </h2>
+                  {connectionIssue && <p className="text-sm text-foreground">{connectionIssue}</p>}
+                  <p className="text-sm text-muted-foreground">
+                    Nova isn&apos;t listening or speaking right now. Your progress is saved - reconnect to continue this
+                    session.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleReconnect}
+                    disabled={isJoining}
+                    className="mt-1 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Wifi className="size-4" /> {linkState === "failed" ? "Try again" : "Reconnect"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -373,13 +624,23 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
                 </span>
               </div>
 
-              <Waveform levels={levels} active={isAnimated} />
+              {/* Real voice-activity bars from the SDK's own frequency data -
+                  input while the learner is talking, output while the Tutor
+                  is talking. Not a fake CSS animation. */}
+              <TutorWaveform
+                animated={isAnimated}
+                visible={!hasOpenTools}
+                speaking={conversation.mode === "speaking"}
+                interrupting={interrupting}
+                getInputData={conversation.getInputByteFrequencyData}
+                getOutputData={conversation.getOutputByteFrequencyData}
+              />
 
               {messages.length === 0 && (
                 <p className="max-w-xl text-[15px] leading-relaxed text-muted-foreground">
-                  {connection.isResume
+                  {activeConnection.isResume
                     ? "Reconnecting you with Nova to continue this session..."
-                    : connection.firstMessage}
+                    : activeConnection.firstMessage}
                 </p>
               )}
             </div>
@@ -461,12 +722,12 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Type your message..."
-                disabled={status !== "connected"}
+                disabled={!isConnected}
                 className="flex-1 rounded-xl border border-border bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
               />
               <button
                 type="submit"
-                disabled={status !== "connected" || !draft.trim()}
+                disabled={!isConnected || !draft.trim()}
                 aria-label="Send message"
                 className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
@@ -490,13 +751,14 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
           </div>
 
           <div className="flex items-center gap-2">
-            {conversation.mode === "speaking" && status === "connected" && (
+            {isConnected && (conversation.mode === "speaking" || interrupting) && (
               <button
                 type="button"
                 onClick={handleInterrupt}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning-foreground hover:bg-warning/20"
+                disabled={interrupting}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning-foreground hover:bg-warning/20 disabled:cursor-default disabled:opacity-70"
               >
-                <Square className="size-3.5" /> Interrupt
+                <Square className="size-3.5" /> {interrupting ? "Stopped - your turn" : "Interrupt"}
               </button>
             )}
 
@@ -529,7 +791,10 @@ function TutorCall({ sessionId, room, connection }: TutorCallProps) {
               onClick={() => {
                 const next = !audioMuted
                 setAudioMuted(next)
-                conversation.setVolume({ volume: next ? 0 : 1 })
+                audioMutedRef.current = next
+                // While an Interrupt is silencing Nova, just record the
+                // choice - finishInterrupt applies it when audio comes back.
+                if (!interruptingRef.current) conversation.setVolume({ volume: next ? 0 : 1 })
               }}
               aria-pressed={audioMuted}
               className={`hidden size-10 items-center justify-center rounded-xl border transition-colors sm:flex ${

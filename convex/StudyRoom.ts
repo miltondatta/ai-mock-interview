@@ -468,6 +468,7 @@ const SESSION_SCOPED_TABLES = [
   "studyRoomNotes",
   "studyRoomWorkspaceLayout",
   "studyRoomToolActions",
+  "studyRoomTutorLeases",
 ] as const;
 
 // Deletes a room together with every session in it and everything scoped
@@ -773,17 +774,119 @@ export const EndStudyRoomSession = mutation({
     userId: v.id("UserTable"),
     sessionId: v.id("studyRoomSessions"),
     reason: v.optional(v.union(v.literal("completed"), v.literal("abandoned"))),
+    // Phase 1 - the calling tab's Tutor lease id. When given, a tab that
+    // doesn't hold the session's *active* lease can't end it (e.g. a second
+    // tab being closed must not kill the live Tutor running in the owning
+    // tab). Omitted -> previous behaviour, unchanged.
+    clientId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const session = await requireOwnedSession(ctx, args.userId, args.sessionId);
     if (session.status !== "in_progress") return;
     const now = Date.now();
+    const lease = await getTutorLease(ctx, args.sessionId);
+    if (args.clientId && lease && lease.clientId !== args.clientId && lease.expiresAt > now) return;
     await ctx.db.patch(args.sessionId, {
       status: args.reason ?? "completed",
       endedAt: now,
       durationSeconds: Math.round((now - session.startedAt) / 1000),
       updatedAt: now,
     });
+    if (lease) await ctx.db.delete(lease._id);
+  },
+});
+
+// --- Phase 1: single-active-tab Tutor lease ---------------------------------
+// Only one browser tab may run the live ElevenLabs Tutor (and hold the
+// microphone) for a session. The owning tab acquires a lease, renews it on a
+// heartbeat, and releases it on exit. A tab that disappears without
+// releasing just lets the lease expire (TUTOR_LEASE_MS), after which any tab
+// can take it - so a crashed tab never locks a session forever.
+const TUTOR_LEASE_MS = 90_000;
+
+async function getTutorLease(ctx: MutationCtx | QueryCtx, sessionId: Id<"studyRoomSessions">) {
+  return await ctx.db
+    .query("studyRoomTutorLeases")
+    .withIndex("by_session", (q) => q.eq("studyRoomSessionId", sessionId))
+    .first();
+}
+
+// `force` is an explicit "use this tab instead" takeover - the previous
+// owner notices on its next heartbeat (or immediately, via BroadcastChannel,
+// when it's in the same browser) and disconnects itself.
+export const AcquireTutorLease = mutation({
+  args: {
+    userId: v.id("UserTable"),
+    sessionId: v.id("studyRoomSessions"),
+    clientId: v.string(),
+    force: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const session = await requireOwnedSession(ctx, args.userId, args.sessionId);
+    if (session.status !== "in_progress") return { ok: false as const, reason: "session_ended" as const };
+    const now = Date.now();
+    const lease = await getTutorLease(ctx, args.sessionId);
+    if (!lease) {
+      await ctx.db.insert("studyRoomTutorLeases", {
+        studyRoomSessionId: args.sessionId,
+        userId: args.userId,
+        clientId: args.clientId,
+        expiresAt: now + TUTOR_LEASE_MS,
+        updatedAt: now,
+      });
+      return { ok: true as const };
+    }
+    if (lease.clientId === args.clientId || lease.expiresAt <= now || args.force) {
+      await ctx.db.patch(lease._id, { clientId: args.clientId, expiresAt: now + TUTOR_LEASE_MS, updatedAt: now });
+      return { ok: true as const };
+    }
+    return { ok: false as const, reason: "held_elsewhere" as const };
+  },
+});
+
+// Heartbeat. Fails (ok: false -> the caller must stop its Tutor) only when
+// another tab actively holds the lease, i.e. it took over. If the lease row
+// is simply missing or stale (e.g. React Strict Mode's dev-only effect
+// re-run released it, or a release beacon raced the heartbeat) and nobody
+// else claimed it, this tab quietly re-establishes it.
+export const RenewTutorLease = mutation({
+  args: {
+    userId: v.id("UserTable"),
+    sessionId: v.id("studyRoomSessions"),
+    clientId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const session = await requireOwnedSession(ctx, args.userId, args.sessionId);
+    if (session.status !== "in_progress") return { ok: false as const };
+    const now = Date.now();
+    const lease = await getTutorLease(ctx, args.sessionId);
+    if (!lease) {
+      await ctx.db.insert("studyRoomTutorLeases", {
+        studyRoomSessionId: args.sessionId,
+        userId: args.userId,
+        clientId: args.clientId,
+        expiresAt: now + TUTOR_LEASE_MS,
+        updatedAt: now,
+      });
+      return { ok: true as const };
+    }
+    if (lease.clientId !== args.clientId && lease.expiresAt > now) return { ok: false as const };
+    await ctx.db.patch(lease._id, { clientId: args.clientId, expiresAt: now + TUTOR_LEASE_MS, updatedAt: now });
+    return { ok: true as const };
+  },
+});
+
+// Only the owner can release; anyone else's release is a no-op.
+export const ReleaseTutorLease = mutation({
+  args: {
+    userId: v.id("UserTable"),
+    sessionId: v.id("studyRoomSessions"),
+    clientId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireOwnedSession(ctx, args.userId, args.sessionId);
+    const lease = await getTutorLease(ctx, args.sessionId);
+    if (lease && lease.clientId === args.clientId) await ctx.db.delete(lease._id);
   },
 });
 

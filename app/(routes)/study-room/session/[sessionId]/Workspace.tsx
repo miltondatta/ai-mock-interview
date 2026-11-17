@@ -1,17 +1,20 @@
 "use client"
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
-import { useConversationClientTool } from "@elevenlabs/react"
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
+import { useConversationClientTool, useConversationControls } from "@elevenlabs/react"
 import { useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { Bot, Maximize2, Minimize2, X } from "lucide-react"
 import WhiteboardPanel, { type ExcalidrawApi } from "./WhiteboardPanel"
-import CodeEditorPanel, { type CodeEditorHandle } from "./CodeEditorPanel"
-import NotesPanel, { type NotesHandle } from "./NotesPanel"
+import CodeEditorPanel, { type CodeEditorHandle, type CodeRunSummary, type CodeWriteMode } from "./CodeEditorPanel"
+import NotesPanel, { type NotesHandle, type NotesInsertPosition } from "./NotesPanel"
 import ResizableSplitter from "./ResizableSplitter"
 import ToolApprovalBanner from "./ToolApprovalBanner"
 import { WORKSPACE_TOOLS, type PendingApproval, type WorkspaceTool } from "./workspaceTypes"
+import * as whiteboardTools from "./tutorTools/whiteboardTools"
+import type { ApprovalOutcome, ToolResult } from "./tutorTools/whiteboardTools"
 
 export interface WorkspaceHandle {
   openTool: (tool: WorkspaceTool) => void
@@ -24,22 +27,80 @@ interface WorkspaceProps {
 }
 
 const APPROVAL_TIMEOUT_MS = 30_000
+// Phase 3 (C6) - how long a Tutor tool waits for a just-opened panel to be
+// ready (Excalidraw is loaded lazily; notes/code wait for their saved data).
+const READY_TIMEOUT_MS = 10_000
+const MAX_PREVIEW_CHARS = 2000
 
-function useBreakpoint(): "mobile" | "tablet" | "desktop" {
-  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280))
-  useEffect(() => {
-    function onResize() {
-      setWidth(window.innerWidth)
-    }
-    window.addEventListener("resize", onResize)
-    return () => window.removeEventListener("resize", onResize)
-  }, [])
+type Breakpoint = "mobile" | "tablet" | "desktop"
+
+function getBreakpoint(width: number): Breakpoint {
   if (width < 768) return "mobile"
   if (width < 1024) return "tablet"
   return "desktop"
 }
 
+// Phase 2 - stores the breakpoint itself rather than the raw width, so a
+// window resize only re-renders the Workspace when it actually crosses a
+// breakpoint (React bails out of a same-value state update), instead of on
+// every pixel of a drag-resize. Same thresholds as before.
+function useBreakpoint(): Breakpoint {
+  const [breakpoint, setBreakpoint] = useState<Breakpoint>(() =>
+    getBreakpoint(typeof window !== "undefined" ? window.innerWidth : 1280)
+  )
+  useEffect(() => {
+    function onResize() {
+      setBreakpoint(getBreakpoint(window.innerWidth))
+    }
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
+  return breakpoint
+}
+
+// Phase 3 (C6) - resolves with the value once `get` returns something truthy,
+// or null after the timeout. Polls lightly; never blocks the main thread.
+function waitFor<T>(get: () => T | null | undefined | false, timeoutMs = READY_TIMEOUT_MS): Promise<T | null> {
+  return new Promise((resolve) => {
+    const started = Date.now()
+    const check = () => {
+      const value = get()
+      if (value) return resolve(value as T)
+      if (Date.now() - started > timeoutMs) return resolve(null)
+      setTimeout(check, 50)
+    }
+    check()
+  })
+}
+
 const TOOL_ICON_LABEL: Record<WorkspaceTool, string> = { whiteboard: "Whiteboard", code: "Code Editor", notes: "Notes" }
+
+// Phase 4 - registers a Tutor client tool whose handler returns a structured
+// result. The SDK only types tool results as string | number, and would
+// JSON-encode an object anyway, so the result is sent as a JSON string.
+// Same latest-handler behaviour as useConversationClientTool itself.
+function useTutorTool(name: string, handler: (args: any) => unknown) {
+  useConversationClientTool(name, (args) => Promise.resolve(handler(args)).then((value) => JSON.stringify(value)))
+}
+
+interface QueuedApproval extends PendingApproval {
+  id: number
+  resolve: (outcome: ApprovalOutcome) => void
+}
+
+function declined(outcome: ApprovalOutcome, what: string): ToolResult {
+  return outcome === "timed_out"
+    ? { ok: false, status: "timed_out", message: `The learner didn't respond in time, so ${what}.` }
+    : { ok: false, status: "declined", message: `The learner declined, so ${what}.` }
+}
+
+function notReady(tool: WorkspaceTool): ToolResult {
+  return { ok: false, status: "failed", message: `The ${TOOL_ICON_LABEL[tool]} didn't finish opening - try again in a moment.` }
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
 
 const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace(
   { sessionId, userId, onOpenToolsChange },
@@ -49,6 +110,8 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   const savedLayout = useQuery(api.StudyRoomWorkspace.GetWorkspaceLayout, { userId, sessionId: sid })
   const saveLayout = useMutation(api.StudyRoomWorkspace.SaveWorkspaceLayout)
   const logAction = useMutation(api.StudyRoomWorkspace.LogToolAction)
+  // Stable action references - subscribing to them doesn't re-render (Phase 2).
+  const { sendContextualUpdate } = useConversationControls()
 
   const [openOrder, setOpenOrder] = useState<WorkspaceTool[]>([])
   const [activeTool, setActiveTool] = useState<WorkspaceTool | null>(null)
@@ -60,9 +123,15 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   const excalidrawApiRef = useRef<ExcalidrawApi | null>(null)
   const codeRef = useRef<CodeEditorHandle | null>(null)
   const notesRef = useRef<NotesHandle | null>(null)
-  const approvalResolverRef = useRef<((approved: boolean) => void) | null>(null)
-  const approvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const layoutSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Phase 3 (C7) - approval queue: one banner at a time, the rest wait their
+  // turn (their 30s timeout only starts when they're shown).
+  const approvalQueueRef = useRef<QueuedApproval[]>([])
+  const activeApprovalRef = useRef<QueuedApproval | null>(null)
+  const approvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const approvalIdRef = useRef(0)
+  // Phase 4 (M4) - identical mutating tool calls already in flight.
+  const inFlightRef = useRef(new Set<string>())
 
   const breakpoint = useBreakpoint()
 
@@ -119,282 +188,474 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
 
   useImperativeHandle(ref, () => ({ openTool: openToolInternal }), [openToolInternal])
 
-  type ApprovalOutcome = "approved" | "rejected" | "timed_out"
+  // Phase 2 - stable, so the memoized WhiteboardPanel isn't re-rendered (and
+  // its effect re-run) just because the Workspace re-rendered.
+  const handleWhiteboardApiReady = useCallback((excalidrawApi: ExcalidrawApi | null) => {
+    excalidrawApiRef.current = excalidrawApi
+  }, [])
 
-  function requestApproval(tool: WorkspaceTool, description: string): Promise<ApprovalOutcome> {
+  // Phase 4 (M3/M4) - after a run the *learner* started, tell Nova what
+  // happened as a contextual update (no reply is triggered, nothing is
+  // spoken), so she can explain errors without being asked to look.
+  const handleLearnerRun = useCallback(
+    (summary: CodeRunSummary) => {
+      const parts = [
+        `[Code Editor] The learner ran ${summary.filename} (${summary.language}). Result: ${summary.status}, exit code ${summary.exitCode ?? "n/a"}.`,
+        summary.stdout ? `stdout:\n${summary.stdout.slice(0, 800)}` : "",
+        summary.stderr ? `stderr:\n${summary.stderr.slice(0, 800)}` : "",
+        summary.compileOutput ? `compiler:\n${summary.compileOutput.slice(0, 800)}` : "",
+        summary.error ? `error: ${summary.error}` : "",
+      ]
+      try {
+        sendContextualUpdate(parts.filter(Boolean).join("\n"))
+      } catch {
+        // No live conversation (e.g. disconnected) - the result is still in
+        // get_workspace_context for later.
+      }
+    },
+    [sendContextualUpdate]
+  )
+
+  // --- Phase 3 (C7): approval queue ----------------------------------------
+
+  function showNextApproval() {
+    if (activeApprovalRef.current) return
+    const next = approvalQueueRef.current.shift()
+    if (!next) {
+      setPendingApproval(null)
+      return
+    }
+    activeApprovalRef.current = next
+    setPendingApproval({
+      tool: next.tool,
+      description: next.description,
+      details: next.details,
+      preview: next.preview,
+      queuedBehind: approvalQueueRef.current.length,
+    })
+    const id = next.id
+    approvalTimerRef.current = setTimeout(() => finishApproval(id, "timed_out"), APPROVAL_TIMEOUT_MS)
+  }
+
+  // Ignores stale timers/clicks: only the approval currently shown can be
+  // resolved, and only once.
+  function finishApproval(id: number | undefined, outcome: ApprovalOutcome) {
+    const current = activeApprovalRef.current
+    if (!current || current.id !== id) return
+    if (approvalTimerRef.current) clearTimeout(approvalTimerRef.current)
+    approvalTimerRef.current = null
+    activeApprovalRef.current = null
+    current.resolve(outcome)
+    showNextApproval()
+  }
+
+  function requestApproval(
+    tool: WorkspaceTool,
+    description: string,
+    extra: { details?: string; preview?: string } = {}
+  ): Promise<ApprovalOutcome> {
     return new Promise((resolve) => {
-      approvalResolverRef.current = (approved) => resolve(approved ? "approved" : "rejected")
-      setPendingApproval({ tool, description })
-      approvalTimerRef.current = setTimeout(() => {
-        approvalResolverRef.current = null
-        setPendingApproval(null)
-        resolve("timed_out")
-      }, APPROVAL_TIMEOUT_MS)
+      approvalQueueRef.current.push({
+        id: ++approvalIdRef.current,
+        tool,
+        description,
+        details: extra.details,
+        preview: extra.preview ? extra.preview.slice(0, MAX_PREVIEW_CHARS) : undefined,
+        resolve,
+      })
+      if (activeApprovalRef.current) {
+        const behind = approvalQueueRef.current.length
+        setPendingApproval((prev) => (prev ? { ...prev, queuedBehind: behind } : prev))
+      }
+      showNextApproval()
     })
   }
 
-  function resolveApproval(approved: boolean) {
-    if (approvalTimerRef.current) clearTimeout(approvalTimerRef.current)
-    approvalResolverRef.current?.(approved)
-    approvalResolverRef.current = null
-    setPendingApproval(null)
+  // Unmounting (session ended / tab lost ownership) settles every waiting
+  // approval so no Tutor tool call is left hanging.
+  useEffect(() => {
+    const queue = approvalQueueRef
+    const active = activeApprovalRef
+    return () => {
+      if (approvalTimerRef.current) clearTimeout(approvalTimerRef.current)
+      active.current?.resolve("timed_out")
+      active.current = null
+      for (const item of queue.current) item.resolve("timed_out")
+      queue.current = []
+    }
+  }, [])
+
+  function confirmFor(tool: WorkspaceTool) {
+    return (description: string, details?: string) => requestApproval(tool, description, { details })
   }
 
-  function logResult(tool: WorkspaceTool, actionType: string, summary: string, status: "applied" | "rejected" | "timed_out") {
-    logAction({ userId, sessionId: sid, tool, actionType, summary, status }).catch((e) =>
+  function logResult(tool: WorkspaceTool, actionType: string, result: ToolResult | { status: string; message: string }) {
+    const status =
+      result.status === "applied" ? "applied" : result.status === "declined" ? "rejected" : result.status === "timed_out" ? "timed_out" : null
+    if (!status) return
+    logAction({ userId, sessionId: sid, tool, actionType, summary: result.message.slice(0, 300), status }).catch((e) =>
       console.error("Failed to log tool action:", e)
     )
   }
 
-  // --- Whiteboard tool functions (operate on the real Excalidraw instance
-  // via the API captured from WhiteboardPanel's excalidrawAPI callback) ---
-
-  function whiteboardSummary(): string {
-    const api = excalidrawApiRef.current
-    if (!api) return "The whiteboard is currently closed."
-    try {
-      const elements = api.getSceneElements().filter((el: any) => !el.isDeleted)
-      if (elements.length === 0) return "The whiteboard is empty."
-      const texts = elements
-        .filter((el: any) => el.type === "text")
-        .map((el: any) => el.text)
-        .filter(Boolean)
-      return `The whiteboard has ${elements.length} element(s)${
-        texts.length ? `, including: ${texts.slice(0, 12).join(", ")}` : ""
-      }.`
-    } catch {
-      return "Couldn't read the whiteboard right now."
+  // Phase 4 (M4.7) - the same mutating call (same tool + identical args)
+  // can't run twice concurrently, e.g. on a duplicated tool call.
+  async function once(name: string, args: unknown, fn: () => Promise<ToolResult>): Promise<ToolResult> {
+    const key = `${name}:${JSON.stringify(args ?? {})}`
+    if (inFlightRef.current.has(key)) {
+      return { ok: false, status: "failed", message: "That exact action is already in progress." }
     }
-  }
-
-  async function whiteboardAddDiagram(args: {
-    title?: string
-    nodes: { id: string; label: string }[]
-    edges: { from: string; to: string; label?: string }[]
-  }): Promise<string> {
-    openToolInternal("whiteboard")
-    const api = excalidrawApiRef.current
-    if (!api) return "I opened the whiteboard - please ask me again in a moment to draw it."
-    if (!Array.isArray(args.nodes) || args.nodes.length === 0) return "I need at least one node to draw a diagram."
+    inFlightRef.current.add(key)
     try {
-      const { convertToExcalidrawElements } = await import("@excalidraw/excalidraw")
-      const existing = api.getSceneElements()
-      const nodeWidth = 170
-      const nodeHeight = 64
-      const gapX = 90
-      const baseY = 120 + Math.floor(existing.length / 6) * 180
-      const positions: Record<string, { x: number; y: number; cx: number; cy: number }> = {}
-      args.nodes.forEach((n, i) => {
-        const x = 80 + i * (nodeWidth + gapX)
-        positions[n.id] = { x, y: baseY, cx: x + nodeWidth / 2, cy: baseY + nodeHeight / 2 }
-      })
-
-      const skeletons: any[] = args.nodes.map((n) => ({
-        type: "rectangle",
-        x: positions[n.id].x,
-        y: positions[n.id].y,
-        width: nodeWidth,
-        height: nodeHeight,
-        backgroundColor: "#fff7ed",
-        strokeColor: "#f97316",
-        strokeWidth: 2,
-        label: { text: n.label, fontSize: 15 },
-      }))
-
-      ;(args.edges ?? []).forEach((e) => {
-        const a = positions[e.from]
-        const b = positions[e.to]
-        if (!a || !b) return
-        skeletons.push({
-          type: "arrow",
-          x: a.cx,
-          y: a.cy,
-          points: [
-            [0, 0],
-            [b.cx - a.cx, b.cy - a.cy],
-          ],
-          strokeColor: "#78716c",
-          strokeWidth: 2,
-          ...(e.label ? { label: { text: e.label, fontSize: 12 } } : {}),
-        })
-      })
-
-      if (args.title) {
-        skeletons.unshift({ type: "text", x: 80, y: baseY - 36, text: args.title, fontSize: 20, strokeColor: "#1f2937" })
-      }
-
-      const newElements = convertToExcalidrawElements(skeletons)
-      api.updateScene({ elements: [...existing, ...newElements] })
-      const summary = `Added a diagram${args.title ? ` titled "${args.title}"` : ""} with ${args.nodes.length} node(s).`
-      logResult("whiteboard", "create_diagram", summary, "applied")
-      return summary
+      return await fn()
     } catch (e) {
-      console.error("Whiteboard diagram tool failed:", e)
-      return "I wasn't able to draw that on the whiteboard just now."
+      console.error(`Tutor tool ${name} failed:`, e)
+      return { ok: false, status: "failed", message: "That action couldn't be completed." }
+    } finally {
+      inFlightRef.current.delete(key)
     }
   }
 
-  function whiteboardHighlight(args: { labels: string[] }): string {
-    const api = excalidrawApiRef.current
-    if (!api) return "The whiteboard isn't open."
+  // --- Phase 3 (C6): panel readiness ----------------------------------------
+
+  function ensureWhiteboard() {
+    openToolInternal("whiteboard")
+    return waitFor(() => excalidrawApiRef.current)
+  }
+
+  function ensureCode() {
+    openToolInternal("code")
+    return waitFor(() => (codeRef.current?.isReady() ? codeRef.current : null))
+  }
+
+  function ensureNotes() {
+    openToolInternal("notes")
+    return waitFor(() => (notesRef.current?.isReady() ? notesRef.current : null))
+  }
+
+  // --- Workspace context (M1.1 / M3.1 / M4.1) -------------------------------
+
+  function getWorkspaceContext() {
+    const notes = notesRef.current?.isReady() ? notesRef.current : null
+    const code = codeRef.current?.isReady() ? codeRef.current : null
+    const outline = notes?.getOutline() ?? []
+    const selection = notes?.getSelectionText() ?? ""
+    return {
+      openTools: openOrder.map((t) => TOOL_ICON_LABEL[t]),
+      activeTool: activeTool ? TOOL_ICON_LABEL[activeTool] : null,
+      awaitingLearnerApproval: !!pendingApproval,
+      whiteboard: openOrder.includes("whiteboard")
+        ? whiteboardTools.describeWhiteboard(excalidrawApiRef.current)
+        : { open: false },
+      codeEditor: code ? { open: true, ...code.getContext() } : { open: openOrder.includes("code"), ready: false },
+      notes: notes
+        ? {
+            open: true,
+            empty: outline.length === 0,
+            blockCount: outline.length,
+            outline: outline.slice(0, 60),
+            ...(outline.length > 60 ? { outlineTruncated: true } : {}),
+            ...(selection ? { selectedText: selection } : {}),
+          }
+        : { open: openOrder.includes("notes"), ready: false },
+    }
+  }
+
+  // --- Whiteboard tools ------------------------------------------------------
+
+  function whiteboardTool(name: string, args: any, run: (wb: ExcalidrawApi) => Promise<ToolResult> | ToolResult) {
+    return once(name, args, async () => {
+      const wb = await ensureWhiteboard()
+      if (!wb) return notReady("whiteboard")
+      const result = await run(wb)
+      logResult("whiteboard", name, result)
+      return result
+    })
+  }
+
+  function whiteboardHighlight(args: { labels?: string[]; ids?: string[] }): ToolResult {
+    const wb = excalidrawApiRef.current
+    if (!wb) return { ok: false, status: "failed", message: "The whiteboard isn't open." }
     try {
-      const lowerLabels = (args.labels ?? []).map((l) => l.toLowerCase())
+      const lowerLabels = (Array.isArray(args?.labels) ? args.labels : []).map((l) => String(l).toLowerCase())
+      const ids = new Set((Array.isArray(args?.ids) ? args.ids : []).map(String))
       let matched = 0
-      const next = api.getSceneElements().map((el: any) => {
-        if (el.type === "text" && el.text && lowerLabels.some((l) => el.text.toLowerCase().includes(l))) {
+      const next = wb.getSceneElements().map((el: any) => {
+        const byLabel = el.type === "text" && el.text && lowerLabels.some((l) => el.text.toLowerCase().includes(l))
+        if (byLabel || ids.has(el.id)) {
           matched++
-          return { ...el, strokeColor: "#eab308", backgroundColor: "#fef9c3" }
+          return {
+            ...el,
+            strokeColor: "#eab308",
+            backgroundColor: el.type === "text" ? el.backgroundColor : "#fef9c3",
+            version: (el.version ?? 1) + 1,
+            versionNonce: Math.floor(Math.random() * 2 ** 31),
+            updated: Date.now(),
+          }
         }
         return el
       })
-      if (matched === 0) return "I couldn't find anything on the whiteboard matching that."
-      api.updateScene({ elements: next })
-      logResult("whiteboard", "highlight", `Highlighted ${matched} element(s).`, "applied")
-      return `Highlighted ${matched} element(s) on the whiteboard.`
+      if (matched === 0) return { ok: false, status: "not_found", message: "Nothing on the whiteboard matched that." }
+      wb.updateScene({ elements: next })
+      const result: ToolResult = { ok: true, status: "applied", message: `Highlighted ${matched} element(s) on the whiteboard.` }
+      logResult("whiteboard", "highlight", result)
+      return result
     } catch (e) {
       console.error("Whiteboard highlight tool failed:", e)
-      return "I wasn't able to highlight that."
+      return { ok: false, status: "failed", message: "I wasn't able to highlight that." }
     }
   }
 
-  async function whiteboardClear(): Promise<string> {
-    const api = excalidrawApiRef.current
-    if (!api) return "The whiteboard isn't open."
-    const hasContent = api.getSceneElements().filter((el: any) => !el.isDeleted).length > 0
+  async function whiteboardClear(): Promise<ToolResult> {
+    const wb = excalidrawApiRef.current
+    if (!wb) return { ok: false, status: "failed", message: "The whiteboard isn't open." }
+    const hasContent = wb.getSceneElements().filter((el: any) => !el.isDeleted).length > 0
     if (hasContent) {
       const outcome = await requestApproval("whiteboard", "Nova wants to clear the whiteboard. Allow it?")
       if (outcome !== "approved") {
-        logResult("whiteboard", "clear", "Clear whiteboard declined by learner.", outcome)
-        return outcome === "timed_out"
-          ? "The learner didn't respond in time, so nothing was cleared."
-          : "The learner declined clearing the whiteboard."
+        const result = declined(outcome, "nothing was cleared")
+        logResult("whiteboard", "clear", result)
+        return result
       }
     }
     try {
-      api.resetScene()
+      wb.resetScene()
       // WhiteboardPanel's own onChange -> debounced, retried, conflict-safe
       // save (M4) picks this up automatically - no need to save here too.
-      logResult("whiteboard", "clear", "Whiteboard cleared.", "applied")
-      return "Cleared the whiteboard."
+      const result: ToolResult = { ok: true, status: "applied", message: "Cleared the whiteboard." }
+      logResult("whiteboard", "clear", result)
+      return result
     } catch (e) {
       console.error(e)
-      return "I wasn't able to clear the whiteboard."
+      return { ok: false, status: "failed", message: "I wasn't able to clear the whiteboard." }
     }
   }
 
-  // --- Code Editor tool functions ---
+  // --- Code Editor tools -------------------------------------------------------
 
-  async function codeWrite(args: {
-    language?: string
-    content: string
-    mode?: "replace" | "append"
-    filename?: string
-  }): Promise<string> {
-    openToolInternal("code")
-    if (!codeRef.current) return "I opened the Code Editor - please ask me again in a moment."
-    const mode = args.mode === "append" ? "append" : "replace"
-    const current = codeRef.current.readCode()
-    if (mode === "replace" && current && current.content.trim().length > 0) {
-      const outcome = await requestApproval(
-        "code",
-        `Nova wants to replace the code in ${current.filename}. Allow it?`
-      )
-      if (outcome !== "approved") {
-        logResult("code", "replace", `Replace ${current.filename} declined by learner.`, outcome)
-        return outcome === "timed_out"
-          ? "The learner didn't respond in time, so the code wasn't changed."
-          : "The learner declined this code change."
+  function codeWrite(args: any): Promise<ToolResult> {
+    return once("write_code", args, async () => {
+      const content = str(args?.content)
+      if (content === undefined) return { ok: false, status: "invalid", message: "write_code needs `content`." }
+      const mode: CodeWriteMode = ["append", "replace_selection", "insert_at_cursor"].includes(args?.mode) ? args.mode : "replace"
+      const code = await ensureCode()
+      if (!code) return notReady("code")
+      const target = code.inspectTarget(str(args?.filename))
+      if (!target) return notReady("code")
+      // Approval before overwriting the learner's existing code (whole file
+      // or their selection) - they see the new code and Nova's explanation.
+      const overwrites =
+        (mode === "replace" && target.content.trim().length > 0) ||
+        (mode === "replace_selection" && target.selectionText.trim().length > 0)
+      if (overwrites) {
+        const outcome = await requestApproval(
+          "code",
+          mode === "replace_selection"
+            ? `Nova wants to replace your selected code in ${target.filename}. Allow it?`
+            : `Nova wants to replace the code in ${target.filename}. Allow it?`,
+          { details: str(args?.explanation), preview: content }
+        )
+        if (outcome !== "approved") {
+          const result = declined(outcome, "the code wasn't changed")
+          logResult("code", mode, result)
+          return result
+        }
       }
-    }
-    const result = codeRef.current.writeCode({
-      language: args.language,
-      content: args.content,
-      mode,
-      filename: args.filename,
+      const written = code.writeCode({ language: str(args?.language), content, mode, filename: str(args?.filename) })
+      const result: ToolResult = { ...written, status: written.ok ? "applied" : "failed" }
+      logResult("code", mode, result)
+      return result
     })
-    logResult("code", mode, result, "applied")
-    return result
   }
 
-  function codeRead(): string {
-    const current = codeRef.current?.readCode()
-    if (!current) return "The Code Editor is currently closed."
-    const lastRun = current.lastRun
-      ? `\nLast run - exit code ${current.lastRun.exitCode ?? "n/a"}. stdout: ${current.lastRun.stdout.slice(0, 400)} stderr: ${current.lastRun.stderr.slice(0, 400)}`
-      : ""
-    return `File ${current.filename} (${current.language}):\n${current.content.slice(0, 1500)}${lastRun}`
-  }
-
-  // --- Notes tool functions ---
-
-  function noteCreate(args: { heading?: string; content: string }): string {
-    openToolInternal("notes")
-    if (!notesRef.current) return "I opened Notes - please ask me again in a moment."
-    const result = notesRef.current.appendBlock({ heading: args.heading, content: args.content })
-    logResult("notes", "append", `Added note${args.heading ? ` (${args.heading})` : ""}.`, "applied")
-    return result
-  }
-
-  async function noteRestructure(args: { content: string }): Promise<string> {
-    openToolInternal("notes")
-    if (!notesRef.current) return "I opened Notes - please ask me again in a moment."
-    const current = notesRef.current.getPlainText()
-    if (current.trim().length > 0) {
-      const outcome = await requestApproval("notes", "Nova wants to restructure your notes. Allow it?")
-      if (outcome !== "approved") {
-        logResult("notes", "restructure", "Restructure notes declined by learner.", outcome)
-        return outcome === "timed_out"
-          ? "The learner didn't respond in time, so the notes weren't changed."
-          : "The learner declined restructuring the notes."
+  function codeRun(args: any): Promise<ToolResult> {
+    return once("run_code", args, async () => {
+      const code = await ensureCode()
+      if (!code) return notReady("code")
+      const summary = await code.runCode({ filename: str(args?.filename) })
+      const ok = summary.status === "success"
+      const result: ToolResult = {
+        ok,
+        status: summary.status === "failed" ? "failed" : "applied",
+        message: ok
+          ? `${summary.filename} ran successfully.`
+          : summary.status === "timeout"
+            ? `${summary.filename} was stopped because it ran too long (sandbox time limit).`
+            : summary.status === "stopped"
+              ? "The learner stopped the run."
+              : `${summary.filename} finished with status "${summary.status}".`,
+        run: summary,
       }
+      logResult("code", "run", { status: result.status, message: result.message })
+      return result
+    })
+  }
+
+  // --- Notes tools ---------------------------------------------------------------
+
+  function notesOp(name: string, args: any, run: (notes: NotesHandle) => Promise<ToolResult> | ToolResult) {
+    return once(name, args, async () => {
+      const notes = await ensureNotes()
+      if (!notes) return notReady("notes")
+      const result = await run(notes)
+      logResult("notes", name, result)
+      return result
+    })
+  }
+
+  function fromNotes(r: { ok: boolean; message: string; [k: string]: unknown }): ToolResult {
+    return { ...r, status: r.ok ? "applied" : "failed" }
+  }
+
+  function openWorkspaceTool(args: { tool: WorkspaceTool }): ToolResult {
+    if (!WORKSPACE_TOOLS.some((t) => t.id === args?.tool)) {
+      return { ok: false, status: "invalid", message: "That isn't a tool I can open." }
     }
-    const result = notesRef.current.replaceContent({ content: args.content })
-    logResult("notes", "restructure", result, "applied")
-    return result
-  }
-
-  function getWorkspaceContext(): string {
-    const parts = [
-      `Open tools: ${openOrder.length ? openOrder.map((t) => TOOL_ICON_LABEL[t]).join(", ") : "none"}.`,
-      `Whiteboard: ${whiteboardSummary()}`,
-      `Code Editor: ${codeRead()}`,
-      `Notes: ${notesRef.current?.getPlainText()?.trim() ? notesRef.current.getPlainText().slice(0, 800) : "empty or closed."}`,
-    ]
-    return parts.join("\n")
-  }
-
-  function openWorkspaceTool(args: { tool: WorkspaceTool }): string {
-    if (!WORKSPACE_TOOLS.some((t) => t.id === args.tool)) return "That isn't a tool I can open."
     openToolInternal(args.tool)
-    return `Opened ${TOOL_ICON_LABEL[args.tool]}.`
+    return { ok: true, status: "applied", message: `Opened ${TOOL_ICON_LABEL[args.tool]}.` }
   }
 
   // --- Register every Tutor-facing client tool. Each name must match a
   // "client tool" configured on the Study Room Tutor's ElevenLabs agent -
-  // see AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md's M3 ACTION REQUIRED
-  // section for the exact names/parameters to add there.
+  // see AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md's "PHASE 4 ... ACTION
+  // REQUIRED" tool table for the exact names/parameters to add there.
+  //
+  // Results are structured objects (sent as JSON strings by useTutorTool)
+  // with `ok`, `status` (applied | declined | timed_out | failed | not_found |
+  // invalid) and a human-readable `message`, plus ids/data the Tutor can use
+  // in a follow-up call (e.g. nodeIds -> connect_whiteboard_elements).
   //
   // useConversationClientTool only types a handler's args as
-  // Record<string, unknown> (its ClientTools default can't be satisfied by
-  // any handler with required params - that's a library-side constraint,
-  // not something fixable from here), so each handler with required args
-  // is wrapped and the args cast to its real parameter type.
+  // Record<string, unknown>, so args are passed through as `any` and
+  // validated inside each tool.
 
-  useConversationClientTool("get_workspace_context", getWorkspaceContext)
-  useConversationClientTool("open_workspace_tool", (args) =>
-    openWorkspaceTool(args as Parameters<typeof openWorkspaceTool>[0])
+  useTutorTool("get_workspace_context", () => getWorkspaceContext())
+  useTutorTool("open_workspace_tool", (args) => openWorkspaceTool(args as any))
+
+  // Whiteboard
+  useTutorTool("create_whiteboard_diagram", (args) =>
+    whiteboardTool("create_diagram", args, (wb) => whiteboardTools.createDiagram(wb, args, confirmFor("whiteboard")))
   )
-  useConversationClientTool("create_whiteboard_diagram", (args) =>
-    whiteboardAddDiagram(args as Parameters<typeof whiteboardAddDiagram>[0])
+  useTutorTool("highlight_whiteboard_elements", async (args) => {
+    const wb = await ensureWhiteboard()
+    return wb ? whiteboardHighlight(args as any) : notReady("whiteboard")
+  })
+  useTutorTool("clear_whiteboard", async () => {
+    const wb = await ensureWhiteboard()
+    return wb ? once("clear_whiteboard", {}, whiteboardClear) : notReady("whiteboard")
+  })
+  useTutorTool("add_whiteboard_element", (args) =>
+    whiteboardTool("add_element", args, (wb) => whiteboardTools.addElement(wb, args))
   )
-  useConversationClientTool("highlight_whiteboard_elements", (args) =>
-    whiteboardHighlight(args as Parameters<typeof whiteboardHighlight>[0])
+  useTutorTool("update_whiteboard_element", (args) =>
+    whiteboardTool("update_element", args, (wb) => whiteboardTools.updateElement(wb, args))
   )
-  useConversationClientTool("clear_whiteboard", whiteboardClear)
-  useConversationClientTool("write_code", (args) => codeWrite(args as Parameters<typeof codeWrite>[0]))
-  useConversationClientTool("create_note", (args) => noteCreate(args as Parameters<typeof noteCreate>[0]))
-  useConversationClientTool("restructure_notes", (args) =>
-    noteRestructure(args as Parameters<typeof noteRestructure>[0])
+  useTutorTool("move_whiteboard_element", (args) =>
+    whiteboardTool("move_element", args, (wb) => whiteboardTools.moveElement(wb, args))
+  )
+  useTutorTool("delete_whiteboard_elements", (args) =>
+    whiteboardTool("delete_elements", args, (wb) => whiteboardTools.deleteElements(wb, args, confirmFor("whiteboard")))
+  )
+  useTutorTool("connect_whiteboard_elements", (args) =>
+    whiteboardTool("connect_elements", args, (wb) => whiteboardTools.connectElements(wb, args))
+  )
+  useTutorTool("update_whiteboard_connection", (args) =>
+    whiteboardTool("update_connection", args, (wb) => whiteboardTools.updateConnection(wb, args))
+  )
+
+  // Code Editor
+  useTutorTool("write_code", (args) => codeWrite(args))
+  useTutorTool("run_code", (args) => codeRun(args))
+  useTutorTool("read_code", async (args) => {
+    const code = await ensureCode()
+    if (!code) return notReady("code")
+    const a = args as any
+    const r = code.readFile({
+      filename: str(a?.filename),
+      startLine: typeof a?.start_line === "number" ? a.start_line : undefined,
+      endLine: typeof a?.end_line === "number" ? a.end_line : undefined,
+    })
+    return { ...r, status: r.ok ? "applied" : "not_found" }
+  })
+
+  // Notes
+  useTutorTool("create_note", (args) =>
+    notesOp("create_note", args, (notes) => {
+      const a = args as any
+      const position: NotesInsertPosition = ["start", "after_section", "after_selection"].includes(a?.position) ? a.position : "end"
+      return fromNotes(notes.insertMarkdown({ markdown: str(a?.content) ?? "", heading: str(a?.heading), position, section: str(a?.section) }))
+    })
+  )
+  useTutorTool("read_notes", async (args) => {
+    const notes = await ensureNotes()
+    if (!notes) return notReady("notes")
+    return fromNotes(notes.readNotes({ section: str((args as any)?.section) }))
+  })
+  useTutorTool("edit_note_section", (args) =>
+    notesOp("edit_note_section", args, async (notes) => {
+      const a = args as any
+      const section = str(a?.section) ?? ""
+      const markdown = str(a?.content) ?? ""
+      const mode = a?.mode === "append" ? "append" : "replace"
+      const info = notes.inspectSection(section)
+      if (!info) return fromNotes(notes.editSection({ section, markdown, mode })) // reports "no such section"
+      // Rewriting a section that contains the learner's own writing needs
+      // their approval; appending, or rewriting Nova's own text, doesn't.
+      if (mode === "replace" && info.hasLearnerContent) {
+        const outcome = await requestApproval("notes", `Nova wants to rewrite your "${info.heading}" section. Allow it?`, {
+          details: str(a?.explanation),
+          preview: markdown,
+        })
+        if (outcome !== "approved") return declined(outcome, "the section wasn't changed")
+      }
+      return fromNotes(notes.editSection({ section, markdown, mode }))
+    })
+  )
+  useTutorTool("delete_note_section", (args) =>
+    notesOp("delete_note_section", args, async (notes) => {
+      const section = str((args as any)?.section) ?? ""
+      const info = notes.inspectSection(section)
+      if (!info) return fromNotes(notes.deleteSection(section))
+      const outcome = await requestApproval("notes", `Nova wants to delete the "${info.heading}" section from your notes. Allow it?`, {
+        details: `${info.blockCount} block(s)${info.hasLearnerContent ? ", including text you wrote" : ""}.`,
+        preview: info.markdown,
+      })
+      if (outcome !== "approved") return declined(outcome, "nothing was deleted")
+      return fromNotes(notes.deleteSection(section))
+    })
+  )
+  useTutorTool("restructure_notes", (args) =>
+    notesOp("restructure_notes", args, async (notes) => {
+      const a = args as any
+      const hasContent = notes.getPlainText().trim().length > 0
+      if (Array.isArray(a?.sections) && a.sections.length > 0) {
+        // Preferred: reorganise existing blocks (formatting + authorship kept,
+        // nothing dropped) under new headings.
+        const sections = a.sections.map((s: any) => ({
+          heading: str(s?.heading) ?? "",
+          blockIds: Array.isArray(s?.block_ids) ? s.block_ids.map(String) : Array.isArray(s?.blockIds) ? s.blockIds.map(String) : [],
+        }))
+        if (hasContent) {
+          const outcome = await requestApproval("notes", "Nova wants to reorganise your notes into sections. Allow it?", {
+            details: `New sections: ${sections.map((s: { heading: string }) => s.heading).filter(Boolean).join(", ")}. Nothing is deleted - anything not placed goes under "Other notes".`,
+          })
+          if (outcome !== "approved") return declined(outcome, "the notes weren't reorganised")
+        }
+        return fromNotes(notes.reorganize({ sections }))
+      }
+      // Legacy shape: a whole new document. Replaces everything, so the
+      // approval says so explicitly.
+      const markdown = str(a?.content) ?? ""
+      if (!markdown.trim()) return { ok: false, status: "invalid", message: "restructure_notes needs `sections` (preferred) or `content`." }
+      if (hasContent) {
+        const outcome = await requestApproval("notes", "Nova wants to replace your entire notes with a restructured version. Allow it?", {
+          details: "This replaces everything currently in Notes. Prefer reorganising existing sections where possible.",
+          preview: markdown,
+        })
+        if (outcome !== "approved") return declined(outcome, "the notes weren't changed")
+      }
+      return fromNotes(notes.replaceAllWithMarkdown(markdown))
+    })
   )
 
   // --- Layout ---
@@ -409,6 +670,9 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
         )
   const overflowTools = openOrder.filter((t) => !visibleTools.includes(t))
   const effectiveVisible = maximizedTool ? [maximizedTool] : visibleTools
+  // Phase 3 (C8) - open-but-not-visible tools stay mounted (display:none) so
+  // their editor state, refs and Tutor context survive.
+  const hiddenOpenTools = openOrder.filter((t) => !effectiveVisible.includes(t))
 
   function handleSplitterResize(a: WorkspaceTool, b: WorkspaceTool, deltaFraction: number) {
     setWeights((prev) => {
@@ -424,8 +688,8 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
       {pendingApproval && (
         <ToolApprovalBanner
           approval={pendingApproval}
-          onApprove={() => resolveApproval(true)}
-          onReject={() => resolveApproval(false)}
+          onApprove={() => finishApproval(activeApprovalRef.current?.id, "approved")}
+          onReject={() => finishApproval(activeApprovalRef.current?.id, "rejected")}
         />
       )}
 
@@ -455,40 +719,50 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
             )}
 
             <div className="flex min-w-0 flex-1">
-              {effectiveVisible.map((tool) => (
-                <div key={tool} className="flex min-w-0" style={{ flexGrow: weights[tool], flexBasis: 0 }}>
-                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                    <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted/40 px-3 py-1.5">
-                      <span className="text-xs font-semibold text-foreground">{TOOL_ICON_LABEL[tool]}</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setMaximizedTool((prev) => (prev === tool ? null : tool))}
-                          aria-label={maximizedTool === tool ? "Restore panel" : "Maximize panel"}
-                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          {maximizedTool === tool ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => closeTool(tool)}
-                          aria-label="Close panel"
-                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <X className="size-3.5" />
-                        </button>
+              {[...effectiveVisible, ...hiddenOpenTools].map((tool) => {
+                const hidden = !effectiveVisible.includes(tool)
+                return (
+                  <div
+                    key={tool}
+                    className="flex min-w-0"
+                    style={hidden ? { display: "none" } : { flexGrow: weights[tool], flexBasis: 0 }}
+                    aria-hidden={hidden || undefined}
+                  >
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                      <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted/40 px-3 py-1.5">
+                        <span className="text-xs font-semibold text-foreground">{TOOL_ICON_LABEL[tool]}</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setMaximizedTool((prev) => (prev === tool ? null : tool))}
+                            aria-label={maximizedTool === tool ? "Restore panel" : "Maximize panel"}
+                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            {maximizedTool === tool ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => closeTool(tool)}
+                            aria-label="Close panel"
+                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="min-h-0 flex-1">
+                        {tool === "whiteboard" && (
+                          <WhiteboardPanel sessionId={sessionId} userId={userId} onApiReady={handleWhiteboardApiReady} />
+                        )}
+                        {tool === "code" && (
+                          <CodeEditorPanel ref={codeRef} sessionId={sessionId} userId={userId} onLearnerRun={handleLearnerRun} />
+                        )}
+                        {tool === "notes" && <NotesPanel ref={notesRef} sessionId={sessionId} userId={userId} />}
                       </div>
                     </div>
-                    <div className="min-h-0 flex-1">
-                      {tool === "whiteboard" && (
-                        <WhiteboardPanel sessionId={sessionId} userId={userId} onApiReady={(api) => (excalidrawApiRef.current = api)} />
-                      )}
-                      {tool === "code" && <CodeEditorPanel ref={codeRef} sessionId={sessionId} userId={userId} />}
-                      {tool === "notes" && <NotesPanel ref={notesRef} sessionId={sessionId} userId={userId} />}
-                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
               {effectiveVisible.map((tool, i) =>
                 i < effectiveVisible.length - 1 ? (
                   <ResizableSplitter
@@ -522,4 +796,11 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   )
 })
 
-export default Workspace
+// Phase 2 (C5) - memoized so TutorCall's own re-renders (Tutor mode/status
+// changes, transcript messages, notices, interrupt state) don't re-render the
+// Workspace and, through it, Excalidraw/Monaco/TipTap. Its props are all
+// stable: sessionId/userId don't change during a session, and TutorCall
+// passes the useState setter as onOpenToolsChange. The Tutor client tools
+// are registered by stable name with a latest-handler ref inside the SDK
+// hook, so skipping parent renders doesn't affect tool calls.
+export default memo(Workspace)

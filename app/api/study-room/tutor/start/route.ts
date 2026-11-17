@@ -52,6 +52,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "This session has already ended." }, { status: 400 });
   }
 
+  // Phase 1 - single active tab per session. The calling tab must hold (or
+  // be able to take) the session's Tutor lease; a second tab gets a 409
+  // instead of a token, so it can never open a second live microphone/Tutor.
+  // (Acquire also renews the caller's own lease.) Requests without a
+  // clientId keep the previous behaviour.
+  const clientId = typeof body?.clientId === "string" ? body.clientId : undefined;
+  if (clientId) {
+    const lease = await convexClient.mutation(api.StudyRoom.AcquireTutorLease, {
+      userId: convexUser._id,
+      sessionId: sessionId as Id<"studyRoomSessions">,
+      clientId,
+    });
+    if (!lease.ok) {
+      return lease.reason === "held_elsewhere"
+        ? NextResponse.json(
+            { error: "This session is already live in another tab.", code: "held_elsewhere" },
+            { status: 409 }
+          )
+        : NextResponse.json({ error: "This session has already ended." }, { status: 400 });
+    }
+  }
+
   const priorMessages = await convexClient.query(api.StudyRoom.GetStudyRoomMessages, {
     userId: convexUser._id,
     sessionId: sessionId as Id<"studyRoomSessions">,

@@ -9,6 +9,13 @@ export const WORKSPACE_TOOLS: { id: WorkspaceTool; label: string }[] = [
 export interface PendingApproval {
   tool: WorkspaceTool;
   description: string;
+  // Phase 4 - optional context so the learner can review before approving:
+  // the Tutor's explanation of the change, and a preview of new content
+  // (e.g. the code that would replace theirs).
+  details?: string;
+  preview?: string;
+  // Phase 3 (C7) - how many more approvals are queued behind this one.
+  queuedBehind?: number;
 }
 
 export interface CodeRunResult {
@@ -17,6 +24,10 @@ export interface CodeRunResult {
   exitCode: number | null;
   compile?: { stdout: string; stderr: string } | null;
   error?: string;
+  // Phase 4 - extra fields the run route already returns (signal is set when
+  // the sandbox killed the process, e.g. on timeout).
+  signal?: string | null;
+  version?: string;
 }
 
 // Canonical language ids this app supports end to end: the value sent to
