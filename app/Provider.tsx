@@ -12,6 +12,13 @@ export default function Provider({children}:any) {
   const [userDetail,setUserDetail]=useState<any>();
 
   useEffect(() => {
+    // Signed out (null, as opposed to undefined while Clerk is loading): drop
+    // the previous user's Convex record. Otherwise, if someone else signs in
+    // without a page reload, per-user queries could briefly run with the old id.
+    if (user === null) {
+      setUserDetail(undefined);
+      return;
+    }
     user&&CreateNewuser();
   },[user])
   const CreateNewuser = async () => {

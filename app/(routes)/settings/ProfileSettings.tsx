@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { getClerkErrorMessage } from "./clerkError"
+import ProfileSetupCard from "./ProfileSetupCard"
 
 const EXPERIENCE_LEVELS = [
   { value: "", label: "Select your experience level" },
@@ -218,6 +219,8 @@ function ProfileSettingsForm({ user, userId, initial }: ProfileSettingsFormProps
 
       <div className="flex flex-col gap-6 p-6">
         <AvatarSection user={user} />
+
+        <ProfileSetupCard userId={userId} />
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="First name" htmlFor="profile-first-name">

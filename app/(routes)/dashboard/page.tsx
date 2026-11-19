@@ -6,6 +6,8 @@ import Link from 'next/link'
 import EmptyState from './EmptyState';
 import InterviewCard from './InterviewCard';
 import ResumeMatchHistory from './ResumeMatchHistory';
+import ProfileSetupPrompt from './ProfileSetupPrompt';
+import JobsForYou from './JobsForYou';
 import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
 import { useQuery } from 'convex/react';
@@ -39,6 +41,8 @@ function Dashboard() {
         </Button>
       </div>
 
+      <ProfileSetupPrompt />
+
       {interviewList && (
         <>
           {/* Both branches stay mounted and are toggled with CSS (not unmounted via a
@@ -54,6 +58,8 @@ function Dashboard() {
           </div>
         </>
       )}
+
+      <JobsForYou />
 
       {resumeMatchList && <ResumeMatchHistory items={resumeMatchList} />}
     </div>

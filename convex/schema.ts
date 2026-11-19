@@ -57,6 +57,43 @@ export const taskLearningResourcesValidator = v.object({
   ),
 });
 
+// Professional Profile (UserProfileTable). Exported so
+// convex/ProfessionalProfile.ts validates writes against the same shapes.
+export const PROFILE_USER_INTENT = v.union(v.literal('interview_preparation'), v.literal('hiring'));
+export const PROFILE_ONBOARDING_STATUS = v.union(
+  v.literal('not_started'),
+  v.literal('in_progress'),
+  v.literal('completed')
+);
+export const profileWorkExperienceValidator = v.object({
+  position: v.string(),
+  company: v.string(),
+  // "YYYY-MM" (or "YYYY") strings. If isCurrent is true, endDate is left empty.
+  startDate: v.optional(v.string()),
+  endDate: v.optional(v.string()),
+  isCurrent: v.optional(v.boolean()),
+  // Free-text duration, e.g. "2 yrs 3 mos", for when exact dates are unknown.
+  duration: v.optional(v.string()),
+  responsibilities: v.optional(v.array(v.string())),
+});
+export const profileEducationValidator = v.object({
+  institution: v.string(),
+  degree: v.optional(v.string()),
+  fieldOfStudy: v.optional(v.string()),
+  graduationYear: v.optional(v.number()),
+});
+export const profileCertificationValidator = v.object({
+  name: v.string(),
+  issuer: v.optional(v.string()),
+  year: v.optional(v.number()),
+  credentialUrl: v.optional(v.string()),
+});
+export const profileProjectValidator = v.object({
+  title: v.string(),
+  description: v.optional(v.string()),
+  url: v.optional(v.string()),
+});
+
 export default defineSchema({
     UserTable: defineTable({
       name: v.string(),
@@ -169,9 +206,90 @@ export default defineSchema({
       location: v.optional(v.string()),
       experienceLevel: v.optional(v.string()),
       linkedinUrl: v.optional(v.string()),
+      // Professional summary. Kept under its original name so Settings >
+      // Profile and the Professional Profile feature share one field.
       bio: v.optional(v.string()),
       updatedAt: v.number(),
-    }),
+
+      // --- Professional Profile / Onboarding (convex/ProfessionalProfile.ts) -
+      // Every field below is optional so rows created by Settings > Profile
+      // before this feature existed stay valid.
+
+      // Onboarding answers. Saved as the user goes, so any subset may be set.
+      userIntent: v.optional(PROFILE_USER_INTENT),
+      targetJobRole: v.optional(v.string()),
+      yearsOfExperience: v.optional(v.number()),
+      targetCompany: v.optional(v.string()),
+      interviewTimeline: v.optional(v.string()),
+      weeklyAvailability: v.optional(v.string()),
+      referralSource: v.optional(v.string()),
+      // Missing means not_started. Separate from profileCompleted, so finishing
+      // onboarding never marks the professional profile itself as complete.
+      onboardingStatus: v.optional(PROFILE_ONBOARDING_STATUS),
+      onboardingCompletedAt: v.optional(v.number()),
+      // Wizard screen to return to when an unfinished onboarding is resumed
+      // (0 = intent screen, 1-5 = numbered steps). This is UI state only.
+      onboardingStep: v.optional(v.number()),
+      // When the user chose "Skip for now" on the post-signup welcome screen
+      // or dismissed the dashboard set-up prompt (M5). It only controls how
+      // prominent the prompt is. It's neither an onboarding status nor
+      // profile completion.
+      profilePromptDismissedAt: v.optional(v.number()),
+
+      // Extra professional details. headline, location, phone, linkedinUrl and
+      // bio (summary) above are reused.
+      githubUrl: v.optional(v.string()),
+      websiteUrl: v.optional(v.string()),
+
+      // Repeating sections. Each one is replaced as a whole when updated.
+      workExperience: v.optional(v.array(profileWorkExperienceValidator)),
+      education: v.optional(v.array(profileEducationValidator)),
+      skills: v.optional(v.array(v.string())),
+      certifications: v.optional(v.array(profileCertificationValidator)),
+      projects: v.optional(v.array(profileProjectValidator)),
+
+      // Points to the shared resume library (ResumeTable + UserResumeTable)
+      // instead of copying it. ImageKit metadata (fileUrl, imagekitFileId,
+      // fileName, ...) is read from ResumeTable, which stays the only source.
+      resumeId: v.optional(v.id('ResumeTable')),
+      resumeLinkedAt: v.optional(v.number()),
+
+      // System fields. createdAt is optional because older rows don't have it.
+      profileCompleted: v.optional(v.boolean()),
+      profileCompletedAt: v.optional(v.number()),
+      createdAt: v.optional(v.number()),
+    })
+      .index('by_user', ['userId']),
+
+    // Jobs module (M7): job openings posted by admins from /admin/jobs. There's
+    // no external job API. Every listing is entered by an admin, so nothing is
+    // invented. Users see active rows on /jobs and in the dashboard's
+    // "Jobs for you" (convex/Jobs.ts, matching in convex/jobMatching.ts).
+    jobs: defineTable({
+      title: v.string(),
+      company: v.string(),
+      location: v.optional(v.string()),
+      workMode: v.optional(v.union(v.literal('onsite'), v.literal('remote'), v.literal('hybrid'))),
+      employmentType: v.optional(v.string()),
+      salaryMin: v.optional(v.number()),
+      salaryMax: v.optional(v.number()),
+      salaryCurrency: v.optional(v.string()),
+      salaryPeriod: v.optional(v.union(v.literal('hour'), v.literal('month'), v.literal('year'))),
+      description: v.optional(v.string()),
+      requiredSkills: v.array(v.string()),
+      minYearsExperience: v.optional(v.number()),
+      maxYearsExperience: v.optional(v.number()),
+      // Free text, e.g. "Bachelor's in Computer Science".
+      educationRequirement: v.optional(v.string()),
+      requiredCertifications: v.optional(v.array(v.string())),
+      // Where the listing comes from, e.g. "Company website" or "LinkedIn".
+      source: v.optional(v.string()),
+      applyUrl: v.string(),
+      active: v.boolean(),
+      postedAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_active_posted', ['active', 'postedAt']),
 
     // Practice Coach: one row per "Generate Video" call, recording what was sent
     // to the N8N webhook and the response it returned.

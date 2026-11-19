@@ -50,3 +50,4 @@ docker*
 # not part of the build (excluded in tsconfig.json), kept locally only
 /design/
 vlc-help.txt
+prof_images/

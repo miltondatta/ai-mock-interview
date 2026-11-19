@@ -10,8 +10,10 @@
 
 import type * as Interview from "../Interview.js";
 import type * as InterviewModes from "../InterviewModes.js";
+import type * as Jobs from "../Jobs.js";
 import type * as Languages from "../Languages.js";
 import type * as PracticeCoach from "../PracticeCoach.js";
+import type * as ProfessionalProfile from "../ProfessionalProfile.js";
 import type * as QuestionBank from "../QuestionBank.js";
 import type * as ResumeMatch from "../ResumeMatch.js";
 import type * as Resumes from "../Resumes.js";
@@ -21,6 +23,7 @@ import type * as StudyRoomWorkspace from "../StudyRoomWorkspace.js";
 import type * as UserProfile from "../UserProfile.js";
 import type * as UserSettings from "../UserSettings.js";
 import type * as admin from "../admin.js";
+import type * as jobMatching from "../jobMatching.js";
 import type * as rateLimit from "../rateLimit.js";
 import type * as users from "../users.js";
 
@@ -33,8 +36,10 @@ import type {
 declare const fullApi: ApiFromModules<{
   Interview: typeof Interview;
   InterviewModes: typeof InterviewModes;
+  Jobs: typeof Jobs;
   Languages: typeof Languages;
   PracticeCoach: typeof PracticeCoach;
+  ProfessionalProfile: typeof ProfessionalProfile;
   QuestionBank: typeof QuestionBank;
   ResumeMatch: typeof ResumeMatch;
   Resumes: typeof Resumes;
@@ -44,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   UserProfile: typeof UserProfile;
   UserSettings: typeof UserSettings;
   admin: typeof admin;
+  jobMatching: typeof jobMatching;
   rateLimit: typeof rateLimit;
   users: typeof users;
 }>;

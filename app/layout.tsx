@@ -26,6 +26,10 @@ export default function RootLayout({
   return (
     <ClerkProvider
       afterSignOutUrl="/"
+      // M5: after a NEW account is created (sign-up page, landing-page modals or a
+      // first-time social sign-in) offer optional profile set-up. Sign-in redirects
+      // and Clerk's registration/verification flow are unchanged.
+      signUpForceRedirectUrl="/welcome"
       appearance={{
         variables: {
           colorPrimary: "var(--primary)",

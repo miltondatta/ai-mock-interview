@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion, AnimatePresence } from "motion/react"
 import { UserButton } from "@clerk/nextjs"
-import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings, FileSearch, FolderOpen, BookOpen, GraduationCap, Bot } from "lucide-react"
+import { Home, LayoutDashboard, Sparkles, CircleHelp, X, Video, Settings, FileSearch, FolderOpen, BookOpen, GraduationCap, Bot, CircleUserRound, BriefcaseBusiness } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserDetailContext } from "@/context/UserDetailContext"
 
@@ -29,6 +29,16 @@ const MenuOptions = [
     name: "Resume Match Analyzer",
     path: "/resume-match-analyzer",
     icon: FileSearch,
+  },
+  {
+    name: "Jobs",
+    path: "/jobs",
+    icon: BriefcaseBusiness,
+  },
+  {
+    name: "My Profile",
+    path: "/profile",
+    icon: CircleUserRound,
   },
   {
     name: "Manage Resume",

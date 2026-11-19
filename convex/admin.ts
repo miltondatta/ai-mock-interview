@@ -20,7 +20,8 @@ async function findSession(ctx: QueryCtx | MutationCtx, token: string) {
 // Throws for any request that doesn't carry a live admin session token. Every
 // data-facing admin function funnels through this so the Convex endpoints can't
 // be used to read the user base without a valid panel login.
-async function requireSession(ctx: QueryCtx | MutationCtx, token: string) {
+// Exported so admin-managed modules (convex/Jobs.ts) use the same check.
+export async function requireSession(ctx: QueryCtx | MutationCtx, token: string) {
   const session = await findSession(ctx, token);
   if (!session) throw new Error("Unauthorized");
   return session;

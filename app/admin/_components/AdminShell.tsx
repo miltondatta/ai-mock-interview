@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   Languages,
   ListChecks,
+  BriefcaseBusiness,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +31,7 @@ const MENU: MenuItem[] = [
   { name: "Dashboard", path: "/admin", icon: LayoutDashboard },
   { name: "Users", path: "/admin/users", icon: Users },
   { name: "Subscription", path: "/admin/subscription", icon: CreditCard },
+  { name: "Jobs", path: "/admin/jobs", icon: BriefcaseBusiness },
   {
     name: "Settings",
     path: "/admin/settings",
