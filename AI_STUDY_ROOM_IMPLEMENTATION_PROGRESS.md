@@ -1,10 +1,116 @@
 # AI Study Room Implementation Progress
 
-Last updated: 2026-11-17 (Phases 1-4 - see the PHASE sections below, newest first)
+Last updated: 2026-11-19 (Phases 1-4 + client tool reliability pass - see the sections below, newest first)
 
 ## Status: M1-M5 implemented in code. M2, M3 and M5 each have a manual ElevenLabs-dashboard step
 ## outside my reach - see all three "ACTION REQUIRED" sections below. Not tested (per explicit
 ## instruction). Not committed to git.
+
+---
+
+## CLIENT TOOL RELIABILITY PASS (2026-11-19) - CODE COMPLETE, NOT TESTED
+
+Stage completed: all application-side work for objectives A-G is written. `tsc --noEmit` passes. ESLint
+reports no new problems in the changed files (the one remaining error, `set-state-in-effect` in the layout
+restore effect, was already there before this pass). **Nothing was run or tested** in a browser or against
+a live ElevenLabs agent (per instruction). The ElevenLabs dashboard was not touched.
+
+### A. Eight-tool verification (dashboard table in "ACTION REQUIRED before M3 works" vs `Workspace.tsx`)
+| Tool | Registered (Study Room provider) | Args vs handler | Result |
+|---|---|---|---|
+| `create_whiteboard_diagram` | yes | `title`, `nodes[{id,label}]`, `edges[{from,to,label?}]` - matches; handler also accepts optional `shape`/`layout`/`direction`/`replace` | match |
+| `highlight_whiteboard_elements` | yes | `labels[]` - matches (also accepts optional `ids[]`) | match |
+| `clear_whiteboard` | yes | none | match |
+| `write_code` | yes | `language`, `content`, `mode` (replace/append), `filename` - matches (also accepts `replace_selection`/`insert_at_cursor`, `explanation`) | match |
+| `create_note` | yes | `heading`, `content` - matches (also optional `position`/`section`) | match |
+| `restructure_notes` | yes | `content` - matches (also accepts the newer `sections` shape) | match |
+| `get_workspace_context` | yes | none | match |
+| `open_workspace_tool` | yes | `tool` = whiteboard/code/notes - matches | match |
+
+- Names: all 8 match the dashboard exactly (spelling + case).
+- Provider: tools are registered with `useConversationClientTool` inside `Workspace`, rendered by `TutorCall`
+  under the Study Room's own `<ConversationProvider>` (`StudyRoomTutorSession.tsx`). The Mock Interview
+  provider (`components/interview/InterviewSession.tsx`) registers no client tools - nothing leaks there.
+- Result transport: the installed `@elevenlabs/client` `handleClientToolCall` sends `client_tool_result`
+  with the handler's return value (string, or JSON-stringified object). Handlers return a JSON string of
+  `{ ok, status, message, ...data }`.
+- Discrepancies: none in names or required params. The app accepts extra optional params, and registers 11
+  extra tools (`add_whiteboard_element`, `run_code`, `read_notes`, ...) that are **not** on the dashboard.
+  They are harmless (never called unless configured) and are documented in the Phase 4 table below.
+
+### Root causes found
+1. **Readiness was polling** (`waitFor`, 50ms `setTimeout` loop, 10s cap): a fixed-delay mechanism, not a
+   signal. A closed panel or session change was not detected; the call just ran out its timeout.
+2. **Saved-layout restore overwrote `openOrder`**: if Nova opened a panel before the
+   `GetWorkspaceLayout` query resolved (start of a session), the restore replaced the open list and
+   unmounted the panel the tool call was waiting on, so the first call failed.
+3. **Stale handles after approval**: `write_code` applied the Code Editor handle captured *before* the 30s
+   approval wait (stale file state). Notes/whiteboard ops did not check the panel still existed.
+4. **`write_code` with an unknown `filename`** asked approval for the *active* file (`inspectTarget` falls
+   back to it), then failed after the learner approved.
+5. **Highlight** only recoloured the matching text element (not the shape it labels), did not report
+   which labels were unmatched, and ran outside the duplicate-call guard.
+6. **`delete_whiteboard_elements`** (not on the dashboard) rebuilt the scene from a pre-approval snapshot,
+   which would discard anything drawn while the banner was up.
+7. `get_workspace_context` reported an open-but-loading Whiteboard as `open: false`.
+8. A handler exception surfaced as an SDK `is_error` result rather than a structured message.
+
+### Implemented panel-readiness mechanism (Objectives B/C)
+- `Workspace.openAndWait(tool, getHandle)` opens/fronts the panel and returns the handle immediately if it
+  is ready. Otherwise it registers a one-shot waiter in `panelWaitersRef[tool]`.
+- Panels **signal** readiness: `WhiteboardPanel.onApiReady(api)` (existing; fires after the saved scene is
+  restored), new `CodeEditorPanel.onReady` (effect on files loaded + active file) and new
+  `NotesPanel.onReady` (after saved notes are loaded into TipTap). Both new callbacks run in passive
+  effects, after `useImperativeHandle` has attached the ref, so the handle is current. Workspace passes
+  stable `useCallback`s, so the memoized panels don't re-render.
+- A waiter settles exactly once: `ready` (handle re-checked; keeps waiting if it isn't there yet),
+  `closed` (`closeTool`), `cancelled` (session change/unmount) or `timeout` (15s failure cut-off only).
+- Used by every panel tool: create diagram, highlight, clear, write/run/read code, create/read/edit/delete
+  note, restructure notes, and `open_workspace_tool` (which now confirms the panel is actually ready).
+- Layout restore now merges saved tools with any already opened (root cause 2).
+
+### Session / approval handling (Objective E)
+- `epochRef` is bumped on a `sessionId` change and on unmount. That cleanup settles every queued/active
+  approval and every panel waiter as `cancelled` and clears the banner.
+- `askApproval(...)`: an approval only counts if the epoch is unchanged and the target panel still exists
+  (Whiteboard: same Excalidraw instance; Code/Notes: handle still ready). Otherwise it is `cancelled`.
+- After approval, Code/Notes ops re-read the live handle before applying.
+- New `ApprovalOutcome`/`ToolResult.status` value `cancelled`. It is not logged via `LogToolAction`, whose
+  status validator only has applied/rejected/timed_out (Convex unchanged). The existing approve/decline,
+  30s timeout, FIFO queue and duplicate-call guard (`once`) are unchanged.
+
+### Per-tool changes (Objective D)
+- `create_whiteboard_diagram`: readiness + cancellation-aware confirm (for `replace`). Logic unchanged.
+- `highlight_whiteboard_elements`: moved to `whiteboardTools.highlightElements`. Matches text
+  case-insensitively and also highlights the labelled container shape. Returns `highlightedIds`,
+  `unmatchedLabels` and `partial`; `not_found` (ok:false) when nothing matched; `invalid` with no labels.
+  Only matched elements are changed. Auto-opens the Whiteboard and waits for it.
+- `clear_whiteboard`: approval unchanged. An empty board returns "already empty"; the banner shows the
+  element count.
+- `write_code`: unknown `mode` -> `invalid` (absent -> `replace`, as before); unknown `filename` ->
+  `not_found` with the file list, before any approval; language lower-cased and an unsupported language
+  reported; the live handle is used after approval.
+- `create_note`: empty `content` -> `invalid` (previously inserted an empty block).
+- `restructure_notes`: approval unchanged; applied through the live handle after approval.
+- `get_workspace_context`: reads live panel instances only; open-but-loading panels are reported as
+  `{ open: true, ready: false }`.
+- `open_workspace_tool`: case-insensitive input, `invalid` for anything else, waits for ready.
+- All tools: exceptions are converted to `{ ok:false, status:"failed" }` in `useTutorTool`.
+
+### Files modified
+`app/(routes)/study-room/session/[sessionId]/Workspace.tsx`, `CodeEditorPanel.tsx` (new optional `onReady`
+prop), `NotesPanel.tsx` (new optional `onReady` prop), `tutorTools/whiteboardTools.ts`. No UI/layout/theme
+changes, no new dependencies, no Convex/Mock Interview/auth/billing changes, TutorCall untouched.
+
+### Remaining limitations
+- Not tested end to end (no browser / live agent run).
+- On the dashboard, each tool's response timeout should exceed 30s (approval) + up to 15s (panel load).
+- Highlight matching is substring-based: "Testing section" won't match a box labelled "Testing". Nova
+  should pass the element's label (from `get_workspace_context`).
+- `write_code` cannot create a new file; a missing `filename` is reported, not created.
+- Pre-existing lint error in the layout-restore effect (`react-hooks/set-state-in-effect`) left as-is.
+- A Workspace that stays mounted across a `sessionId` change still won't reload that session's saved
+  layout (pre-existing; out of scope).
 
 ---
 

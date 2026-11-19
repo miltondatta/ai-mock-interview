@@ -75,6 +75,10 @@ interface CodeEditorPanelProps {
   // Phase 4 - called after a run the *learner* started with the Run button
   // (the Tutor's own runs return their result directly to the Tutor).
   onLearnerRun?: (summary: CodeRunSummary) => void
+  // Called once the panel can serve Tutor operations (files loaded, active
+  // file chosen) - lets the Workspace resume a Tutor tool call that opened
+  // this panel instead of polling for it.
+  onReady?: () => void
 }
 
 const MAX_CONTEXT_CODE_CHARS = 6000
@@ -124,7 +128,7 @@ const STARTER_SNIPPET: Record<string, string> = {
 }
 
 const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(function CodeEditorPanel(
-  { sessionId, userId, onLearnerRun },
+  { sessionId, userId, onLearnerRun, onReady },
   ref
 ) {
   const sid = sessionId as Id<"studyRoomSessions">
@@ -385,11 +389,18 @@ const CodeEditorPanel = forwardRef<CodeEditorHandle, CodeEditorPanelProps>(funct
     return run ? summarizeRun(run, file.filename, file.language) : null
   }
 
+  // Same condition as the handle's isReady(). Passive effects run after the
+  // ref above is attached, so the Workspace sees the up-to-date handle.
+  const panelReady = !!files && files.length > 0 && !!activeFile
+  useEffect(() => {
+    if (panelReady) onReady?.()
+  }, [panelReady, onReady])
+
   useImperativeHandle(
     ref,
     () => ({
       isReady() {
-        return !!files && files.length > 0 && !!activeFile
+        return panelReady
       },
       readCode() {
         if (!activeFile) return null

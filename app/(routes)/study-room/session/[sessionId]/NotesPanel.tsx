@@ -73,6 +73,9 @@ export interface NotesHandle {
 interface NotesPanelProps {
   sessionId: string
   userId: Id<"UserTable">
+  // Called once the editor exists and the saved notes are loaded into it -
+  // lets the Workspace resume a Tutor tool call that opened this panel.
+  onReady?: () => void
 }
 
 // Phase 2 (C5) - hoisted to module scope. TipTap 3's useEditor compares the
@@ -143,7 +146,7 @@ function htmlToMarkdown(html: string): string {
   return Array.from(container.childNodes).map(walk).join("").trim()
 }
 
-const NotesPanel = forwardRef<NotesHandle, NotesPanelProps>(function NotesPanel({ sessionId, userId }, ref) {
+const NotesPanel = forwardRef<NotesHandle, NotesPanelProps>(function NotesPanel({ sessionId, userId, onReady }, ref) {
   const sid = sessionId as Id<"studyRoomSessions">
   const saved = useQuery(api.StudyRoomWorkspace.GetNotes, { userId, sessionId: sid })
   const saveNotes = useMutation(api.StudyRoomWorkspace.SaveNotes)
@@ -226,6 +229,10 @@ const NotesPanel = forwardRef<NotesHandle, NotesPanelProps>(function NotesPanel(
       lastKnownUpdatedAtRef.current = saved.updatedAt
       setSaveState("saved")
     }
+    // The imperative handle (useImperativeHandle, [editor]) is already
+    // attached by the time this passive effect runs.
+    onReady?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, saved])
 
   function handleTitleChange(value: string) {

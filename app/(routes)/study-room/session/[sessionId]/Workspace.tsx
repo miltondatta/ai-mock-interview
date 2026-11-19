@@ -12,9 +12,9 @@ import CodeEditorPanel, { type CodeEditorHandle, type CodeRunSummary, type CodeW
 import NotesPanel, { type NotesHandle, type NotesInsertPosition } from "./NotesPanel"
 import ResizableSplitter from "./ResizableSplitter"
 import ToolApprovalBanner from "./ToolApprovalBanner"
-import { WORKSPACE_TOOLS, type PendingApproval, type WorkspaceTool } from "./workspaceTypes"
+import { CODE_LANGUAGE_OPTIONS, WORKSPACE_TOOLS, type PendingApproval, type WorkspaceTool } from "./workspaceTypes"
 import * as whiteboardTools from "./tutorTools/whiteboardTools"
-import type { ApprovalOutcome, ToolResult } from "./tutorTools/whiteboardTools"
+import type { ApprovalOutcome, Confirm, ToolResult } from "./tutorTools/whiteboardTools"
 
 export interface WorkspaceHandle {
   openTool: (tool: WorkspaceTool) => void
@@ -27,9 +27,11 @@ interface WorkspaceProps {
 }
 
 const APPROVAL_TIMEOUT_MS = 30_000
-// Phase 3 (C6) - how long a Tutor tool waits for a just-opened panel to be
-// ready (Excalidraw is loaded lazily; notes/code wait for their saved data).
-const READY_TIMEOUT_MS = 10_000
+// Upper bound on how long a Tutor tool waits for a just-opened panel to
+// report ready (Excalidraw/Monaco load lazily; notes/code wait for their
+// saved data). This is only a failure cut-off - readiness itself is signalled
+// by the panel (see waitForPanel below), not detected by a delay.
+const READY_TIMEOUT_MS = 15_000
 const MAX_PREVIEW_CHARS = 2000
 
 type Breakpoint = "mobile" | "tablet" | "desktop"
@@ -58,20 +60,14 @@ function useBreakpoint(): Breakpoint {
   return breakpoint
 }
 
-// Phase 3 (C6) - resolves with the value once `get` returns something truthy,
-// or null after the timeout. Polls lightly; never blocks the main thread.
-function waitFor<T>(get: () => T | null | undefined | false, timeoutMs = READY_TIMEOUT_MS): Promise<T | null> {
-  return new Promise((resolve) => {
-    const started = Date.now()
-    const check = () => {
-      const value = get()
-      if (value) return resolve(value as T)
-      if (Date.now() - started > timeoutMs) return resolve(null)
-      setTimeout(check, 50)
-    }
-    check()
-  })
-}
+// Panel readiness (replaces Phase 3's 50ms polling). A Tutor tool that needs
+// a panel opens it and registers a waiter; the panel itself signals when it
+// can serve operations (WhiteboardPanel's onApiReady after the saved scene is
+// restored, CodeEditorPanel/NotesPanel's onReady after their saved data is
+// loaded). Closing the panel, a session change or unmount fails the waiter.
+type PanelWaitFailure = "timeout" | "closed" | "cancelled"
+type PanelWait<T> = { ok: true; handle: T } | { ok: false; reason: PanelWaitFailure }
+type PanelWaiter = (event: "ready" | PanelWaitFailure) => void
 
 const TOOL_ICON_LABEL: Record<WorkspaceTool, string> = { whiteboard: "Whiteboard", code: "Code Editor", notes: "Notes" }
 
@@ -79,9 +75,20 @@ const TOOL_ICON_LABEL: Record<WorkspaceTool, string> = { whiteboard: "Whiteboard
 // result. The SDK only types tool results as string | number, and would
 // JSON-encode an object anyway, so the result is sent as a JSON string.
 // Same latest-handler behaviour as useConversationClientTool itself.
+// Any unexpected exception is turned into a structured failure result, so a
+// tool error is reported to Nova instead of surfacing as an SDK error.
 function useTutorTool(name: string, handler: (args: any) => unknown) {
-  useConversationClientTool(name, (args) => Promise.resolve(handler(args)).then((value) => JSON.stringify(value)))
+  useConversationClientTool(name, async (args) => {
+    try {
+      return JSON.stringify(await handler(args ?? {}))
+    } catch (e) {
+      console.error(`Tutor tool ${name} failed:`, e)
+      return JSON.stringify({ ok: false, status: "failed", message: "That action couldn't be completed." })
+    }
+  })
 }
+
+const CODE_WRITE_MODES: CodeWriteMode[] = ["replace", "append", "replace_selection", "insert_at_cursor"]
 
 interface QueuedApproval extends PendingApproval {
   id: number
@@ -89,13 +96,18 @@ interface QueuedApproval extends PendingApproval {
 }
 
 function declined(outcome: ApprovalOutcome, what: string): ToolResult {
-  return outcome === "timed_out"
-    ? { ok: false, status: "timed_out", message: `The learner didn't respond in time, so ${what}.` }
-    : { ok: false, status: "declined", message: `The learner declined, so ${what}.` }
+  if (outcome === "timed_out") return { ok: false, status: "timed_out", message: `The learner didn't respond in time, so ${what}.` }
+  if (outcome === "cancelled") {
+    return { ok: false, status: "cancelled", message: `The panel was closed or the study session changed before it could be done, so ${what}.` }
+  }
+  return { ok: false, status: "declined", message: `The learner declined, so ${what}.` }
 }
 
-function notReady(tool: WorkspaceTool): ToolResult {
-  return { ok: false, status: "failed", message: `The ${TOOL_ICON_LABEL[tool]} didn't finish opening - try again in a moment.` }
+function notReady(tool: WorkspaceTool, reason: PanelWaitFailure): ToolResult {
+  const label = TOOL_ICON_LABEL[tool]
+  if (reason === "closed") return { ok: false, status: "cancelled", message: `The ${label} was closed before it finished opening, so nothing was changed.` }
+  if (reason === "cancelled") return { ok: false, status: "cancelled", message: `The study session changed, so nothing was changed in the ${label}.` }
+  return { ok: false, status: "failed", message: `The ${label} took too long to load, so nothing was changed. It may still be loading.` }
 }
 
 function str(value: unknown): string | undefined {
@@ -132,6 +144,16 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   const approvalIdRef = useRef(0)
   // Phase 4 (M4) - identical mutating tool calls already in flight.
   const inFlightRef = useRef(new Set<string>())
+  // Tutor calls waiting for a panel to become ready, per panel.
+  const panelWaitersRef = useRef<Record<WorkspaceTool, Set<PanelWaiter>>>({
+    whiteboard: new Set(),
+    code: new Set(),
+    notes: new Set(),
+  })
+  // Bumped when the session changes or the Workspace unmounts. A Tutor call
+  // captures it on entry and refuses to apply anything once it has moved on,
+  // so a pending operation can never land in a different Study Room session.
+  const epochRef = useRef(0)
 
   const breakpoint = useBreakpoint()
 
@@ -142,8 +164,11 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
     if (layoutLoadedRef.current || savedLayout === undefined) return
     layoutLoadedRef.current = true
     if (savedLayout) {
-      setOpenOrder(savedLayout.openTools)
-      setActiveTool(savedLayout.activeTool ?? savedLayout.openTools[0] ?? null)
+      // Merge rather than overwrite: a Tutor tool call may already have
+      // opened a panel before the saved layout arrived, and dropping it here
+      // would unmount the panel that call is waiting on.
+      setOpenOrder((prev) => [...savedLayout.openTools, ...prev.filter((t) => !savedLayout.openTools.includes(t))])
+      setActiveTool((prev) => prev ?? savedLayout.activeTool ?? savedLayout.openTools[0] ?? null)
       setMaximizedTool(savedLayout.maximizedTool ?? null)
       if (savedLayout.panelWeights) setWeights(savedLayout.panelWeights)
     }
@@ -180,6 +205,7 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   }, [])
 
   function closeTool(tool: WorkspaceTool) {
+    failPanelWaiters(tool, "closed")
     const next = openOrder.filter((t) => t !== tool)
     setOpenOrder(next)
     if (activeTool === tool) setActiveTool(next[0] ?? null)
@@ -192,7 +218,11 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   // its effect re-run) just because the Workspace re-rendered.
   const handleWhiteboardApiReady = useCallback((excalidrawApi: ExcalidrawApi | null) => {
     excalidrawApiRef.current = excalidrawApi
+    if (excalidrawApi) notifyPanelReady("whiteboard")
   }, [])
+  // Stable for the same reason (CodeEditorPanel/NotesPanel are memoized).
+  const handleCodeReady = useCallback(() => notifyPanelReady("code"), [])
+  const handleNotesReady = useCallback(() => notifyPanelReady("notes"), [])
 
   // Phase 4 (M3/M4) - after a run the *learner* started, tell Nova what
   // happened as a contextual update (no reply is triggered, nothing is
@@ -271,22 +301,49 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
     })
   }
 
-  // Unmounting (session ended / tab lost ownership) settles every waiting
-  // approval so no Tutor tool call is left hanging.
+  // A session change or unmount (session ended / tab lost ownership) moves
+  // the epoch on and settles everything still waiting - approvals and panel
+  // waits - as "cancelled", so no Tutor tool call is left hanging and none
+  // of them can apply its change afterwards.
   useEffect(() => {
     const queue = approvalQueueRef
     const active = activeApprovalRef
+    const waiters = panelWaitersRef
+    const epoch = epochRef
     return () => {
+      epoch.current++
       if (approvalTimerRef.current) clearTimeout(approvalTimerRef.current)
-      active.current?.resolve("timed_out")
+      approvalTimerRef.current = null
+      const pending = [active.current, ...queue.current]
       active.current = null
-      for (const item of queue.current) item.resolve("timed_out")
       queue.current = []
+      for (const item of pending) item?.resolve("cancelled")
+      setPendingApproval(null)
+      for (const tool of Object.keys(waiters.current) as WorkspaceTool[]) {
+        for (const waiter of [...waiters.current[tool]]) waiter("cancelled")
+      }
     }
-  }, [])
+  }, [sessionId])
 
-  function confirmFor(tool: WorkspaceTool) {
-    return (description: string, details?: string) => requestApproval(tool, description, { details })
+  // Asks the learner. An approval only counts if, by the time it arrives,
+  // the call still belongs to the current session and its target is still
+  // there (`stillValid`); otherwise it is reported as "cancelled" and the
+  // caller applies nothing.
+  async function askApproval(
+    tool: WorkspaceTool,
+    epoch: number,
+    description: string,
+    extra: { details?: string; preview?: string } = {},
+    stillValid?: () => boolean
+  ): Promise<ApprovalOutcome> {
+    if (epochRef.current !== epoch) return "cancelled"
+    const outcome = await requestApproval(tool, description, extra)
+    if (outcome === "approved" && (epochRef.current !== epoch || (stillValid && !stillValid()))) return "cancelled"
+    return outcome
+  }
+
+  function confirmFor(tool: WorkspaceTool, epoch: number, stillValid?: () => boolean): Confirm {
+    return (description: string, details?: string) => askApproval(tool, epoch, description, { details }, stillValid)
   }
 
   function logResult(tool: WorkspaceTool, actionType: string, result: ToolResult | { status: string; message: string }) {
@@ -316,38 +373,84 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
     }
   }
 
-  // --- Phase 3 (C6): panel readiness ----------------------------------------
+  // --- Panel readiness ---------------------------------------------------------
 
-  function ensureWhiteboard() {
-    openToolInternal("whiteboard")
-    return waitFor(() => excalidrawApiRef.current)
+  // The handle a Tutor operation needs, or null while that panel is closed or
+  // still loading. Refs only, so these are safe from stable callbacks.
+  function whiteboardHandle(): ExcalidrawApi | null {
+    return excalidrawApiRef.current
   }
 
-  function ensureCode() {
-    openToolInternal("code")
-    return waitFor(() => (codeRef.current?.isReady() ? codeRef.current : null))
+  function codeHandle(): CodeEditorHandle | null {
+    return codeRef.current?.isReady() ? codeRef.current : null
   }
 
-  function ensureNotes() {
-    openToolInternal("notes")
-    return waitFor(() => (notesRef.current?.isReady() ? notesRef.current : null))
+  function notesHandle(): NotesHandle | null {
+    return notesRef.current?.isReady() ? notesRef.current : null
+  }
+
+  function notifyPanelReady(tool: WorkspaceTool) {
+    for (const waiter of [...panelWaitersRef.current[tool]]) waiter("ready")
+  }
+
+  function failPanelWaiters(tool: WorkspaceTool, reason: PanelWaitFailure) {
+    for (const waiter of [...panelWaitersRef.current[tool]]) waiter(reason)
+  }
+
+  // Opens `tool` (or brings it to the front) and resolves with its handle as
+  // soon as the panel reports ready - immediately when it already is. Each
+  // waiter settles exactly once: ready, panel closed, session changed, or the
+  // READY_TIMEOUT_MS cut-off.
+  function openAndWait<T>(tool: WorkspaceTool, getHandle: () => T | null): Promise<PanelWait<T>> {
+    const epoch = epochRef.current
+    openToolInternal(tool)
+    const current = getHandle()
+    if (current) return Promise.resolve({ ok: true, handle: current })
+    return new Promise((resolve) => {
+      const waiters = panelWaitersRef.current[tool]
+      const waiter: PanelWaiter = (event) => {
+        let result: PanelWait<T>
+        if (event === "ready") {
+          if (epochRef.current !== epoch) {
+            result = { ok: false, reason: "cancelled" }
+          } else {
+            const handle = getHandle()
+            if (!handle) return // signalled before the handle caught up - keep waiting
+            result = { ok: true, handle }
+          }
+        } else {
+          result = { ok: false, reason: event }
+        }
+        waiters.delete(waiter)
+        clearTimeout(timer)
+        resolve(result)
+      }
+      const timer = setTimeout(() => waiter("timeout"), READY_TIMEOUT_MS)
+      waiters.add(waiter)
+    })
   }
 
   // --- Workspace context (M1.1 / M3.1 / M4.1) -------------------------------
 
+  // Live state only: each panel's content is read from its mounted instance
+  // at call time; a panel that is open but still loading says so instead of
+  // reporting saved or empty content.
   function getWorkspaceContext() {
-    const notes = notesRef.current?.isReady() ? notesRef.current : null
-    const code = codeRef.current?.isReady() ? codeRef.current : null
+    const wb = whiteboardHandle()
+    const code = codeHandle()
+    const notes = notesHandle()
+    const open = [...openOrder]
+    if (wb && !open.includes("whiteboard")) open.push("whiteboard")
+    if (code && !open.includes("code")) open.push("code")
+    if (notes && !open.includes("notes")) open.push("notes")
     const outline = notes?.getOutline() ?? []
     const selection = notes?.getSelectionText() ?? ""
     return {
-      openTools: openOrder.map((t) => TOOL_ICON_LABEL[t]),
+      openTools: open.map((t) => TOOL_ICON_LABEL[t]),
       activeTool: activeTool ? TOOL_ICON_LABEL[activeTool] : null,
       awaitingLearnerApproval: !!pendingApproval,
-      whiteboard: openOrder.includes("whiteboard")
-        ? whiteboardTools.describeWhiteboard(excalidrawApiRef.current)
-        : { open: false },
-      codeEditor: code ? { open: true, ...code.getContext() } : { open: openOrder.includes("code"), ready: false },
+      whiteboard: wb ? whiteboardTools.describeWhiteboard(wb) : { open: open.includes("whiteboard"), ready: false },
+      codeEditor: code ? { open: true, ...code.getContext() } : { open: open.includes("code"), ready: false },
       notes: notes
         ? {
             open: true,
@@ -357,103 +460,110 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
             ...(outline.length > 60 ? { outlineTruncated: true } : {}),
             ...(selection ? { selectedText: selection } : {}),
           }
-        : { open: openOrder.includes("notes"), ready: false },
+        : { open: open.includes("notes"), ready: false },
     }
+  }
+
+  async function openWorkspaceTool(args: any): Promise<ToolResult> {
+    const raw = typeof args?.tool === "string" ? args.tool.trim().toLowerCase() : ""
+    const tool = WORKSPACE_TOOLS.find((t) => t.id === raw)?.id
+    if (!tool) {
+      return {
+        ok: false,
+        status: "invalid",
+        message: `"${String(args?.tool ?? "")}" isn't a workspace tool - use "whiteboard", "code" or "notes".`,
+      }
+    }
+    const label = TOOL_ICON_LABEL[tool]
+    const wait =
+      tool === "whiteboard"
+        ? await openAndWait(tool, whiteboardHandle)
+        : tool === "code"
+          ? await openAndWait(tool, codeHandle)
+          : await openAndWait(tool, notesHandle)
+    if (!wait.ok) {
+      if (wait.reason === "timeout") return { ok: false, status: "failed", message: `The ${label} was opened but is still loading.`, tool }
+      return notReady(tool, wait.reason)
+    }
+    return { ok: true, status: "applied", message: `The ${label} is open and ready.`, tool }
   }
 
   // --- Whiteboard tools ------------------------------------------------------
 
-  function whiteboardTool(name: string, args: any, run: (wb: ExcalidrawApi) => Promise<ToolResult> | ToolResult) {
+  // Opens the Whiteboard if needed, waits until it is ready, then runs the
+  // operation. `confirm` asks the learner and only counts an approval if the
+  // same Whiteboard instance is still mounted in the same session.
+  function whiteboardTool(
+    name: string,
+    args: any,
+    run: (wb: ExcalidrawApi, confirm: Confirm) => Promise<ToolResult> | ToolResult
+  ) {
     return once(name, args, async () => {
-      const wb = await ensureWhiteboard()
-      if (!wb) return notReady("whiteboard")
-      const result = await run(wb)
+      const epoch = epochRef.current
+      const wait = await openAndWait("whiteboard", whiteboardHandle)
+      if (!wait.ok) return notReady("whiteboard", wait.reason)
+      const wb = wait.handle
+      const result = await run(wb, confirmFor("whiteboard", epoch, () => excalidrawApiRef.current === wb))
       logResult("whiteboard", name, result)
       return result
     })
   }
 
-  function whiteboardHighlight(args: { labels?: string[]; ids?: string[] }): ToolResult {
-    const wb = excalidrawApiRef.current
-    if (!wb) return { ok: false, status: "failed", message: "The whiteboard isn't open." }
-    try {
-      const lowerLabels = (Array.isArray(args?.labels) ? args.labels : []).map((l) => String(l).toLowerCase())
-      const ids = new Set((Array.isArray(args?.ids) ? args.ids : []).map(String))
-      let matched = 0
-      const next = wb.getSceneElements().map((el: any) => {
-        const byLabel = el.type === "text" && el.text && lowerLabels.some((l) => el.text.toLowerCase().includes(l))
-        if (byLabel || ids.has(el.id)) {
-          matched++
-          return {
-            ...el,
-            strokeColor: "#eab308",
-            backgroundColor: el.type === "text" ? el.backgroundColor : "#fef9c3",
-            version: (el.version ?? 1) + 1,
-            versionNonce: Math.floor(Math.random() * 2 ** 31),
-            updated: Date.now(),
-          }
-        }
-        return el
-      })
-      if (matched === 0) return { ok: false, status: "not_found", message: "Nothing on the whiteboard matched that." }
-      wb.updateScene({ elements: next })
-      const result: ToolResult = { ok: true, status: "applied", message: `Highlighted ${matched} element(s) on the whiteboard.` }
-      logResult("whiteboard", "highlight", result)
-      return result
-    } catch (e) {
-      console.error("Whiteboard highlight tool failed:", e)
-      return { ok: false, status: "failed", message: "I wasn't able to highlight that." }
-    }
-  }
-
-  async function whiteboardClear(): Promise<ToolResult> {
-    const wb = excalidrawApiRef.current
-    if (!wb) return { ok: false, status: "failed", message: "The whiteboard isn't open." }
-    const hasContent = wb.getSceneElements().filter((el: any) => !el.isDeleted).length > 0
-    if (hasContent) {
-      const outcome = await requestApproval("whiteboard", "Nova wants to clear the whiteboard. Allow it?")
-      if (outcome !== "approved") {
-        const result = declined(outcome, "nothing was cleared")
-        logResult("whiteboard", "clear", result)
-        return result
-      }
-    }
-    try {
-      wb.resetScene()
-      // WhiteboardPanel's own onChange -> debounced, retried, conflict-safe
-      // save (M4) picks this up automatically - no need to save here too.
-      const result: ToolResult = { ok: true, status: "applied", message: "Cleared the whiteboard." }
-      logResult("whiteboard", "clear", result)
-      return result
-    } catch (e) {
-      console.error(e)
-      return { ok: false, status: "failed", message: "I wasn't able to clear the whiteboard." }
-    }
+  async function whiteboardClear(wb: ExcalidrawApi, confirm: Confirm): Promise<ToolResult> {
+    const count = wb.getSceneElements().filter((el: any) => !el.isDeleted).length
+    if (count === 0) return { ok: true, status: "applied", message: "The whiteboard was already empty, so there was nothing to clear." }
+    const outcome = await confirm("Nova wants to clear the whiteboard. Allow it?", `${count} element(s) would be removed.`)
+    if (outcome !== "approved") return declined(outcome, "nothing was cleared")
+    wb.resetScene()
+    // WhiteboardPanel's own onChange -> debounced, retried, conflict-safe
+    // save (M4) picks this up automatically - no need to save here too.
+    return { ok: true, status: "applied", message: "Cleared the whiteboard." }
   }
 
   // --- Code Editor tools -------------------------------------------------------
 
   function codeWrite(args: any): Promise<ToolResult> {
     return once("write_code", args, async () => {
+      const epoch = epochRef.current
       const content = str(args?.content)
       if (content === undefined) return { ok: false, status: "invalid", message: "write_code needs `content`." }
-      const mode: CodeWriteMode = ["append", "replace_selection", "insert_at_cursor"].includes(args?.mode) ? args.mode : "replace"
-      const code = await ensureCode()
-      if (!code) return notReady("code")
-      const target = code.inspectTarget(str(args?.filename))
-      if (!target) return notReady("code")
+      const rawMode = str(args?.mode)?.trim().toLowerCase()
+      if (rawMode && !CODE_WRITE_MODES.includes(rawMode as CodeWriteMode)) {
+        return { ok: false, status: "invalid", message: `Unknown write_code mode "${rawMode}" - use "replace" or "append".` }
+      }
+      const mode: CodeWriteMode = (rawMode as CodeWriteMode) || "replace"
+      const filename = str(args?.filename)?.trim() || undefined
+      const rawLanguage = str(args?.language)?.trim().toLowerCase() || undefined
+      const language = rawLanguage && CODE_LANGUAGE_OPTIONS.some((o) => o.value === rawLanguage) ? rawLanguage : undefined
+
+      const wait = await openAndWait("code", codeHandle)
+      if (!wait.ok) return notReady("code", wait.reason)
+      const target = wait.handle.inspectTarget(filename)
+      if (!target) return { ok: false, status: "failed", message: "The Code Editor has no file to write to yet." }
+      // inspectTarget falls back to the active file for an unknown name;
+      // stop here rather than asking approval for the wrong file.
+      if (filename && target.filename !== filename) {
+        return {
+          ok: false,
+          status: "not_found",
+          message: `There's no file named "${filename}" in the Code Editor, so nothing was written.`,
+          files: wait.handle.getContext()?.files.map((f) => f.filename) ?? [],
+        }
+      }
       // Approval before overwriting the learner's existing code (whole file
       // or their selection) - they see the new code and Nova's explanation.
       const overwrites =
         (mode === "replace" && target.content.trim().length > 0) ||
         (mode === "replace_selection" && target.selectionText.trim().length > 0)
       if (overwrites) {
-        const outcome = await requestApproval(
+        const outcome = await askApproval(
           "code",
+          epoch,
           mode === "replace_selection"
             ? `Nova wants to replace your selected code in ${target.filename}. Allow it?`
             : `Nova wants to replace the code in ${target.filename}. Allow it?`,
-          { details: str(args?.explanation), preview: content }
+          { details: str(args?.explanation), preview: content },
+          () => !!codeHandle()
         )
         if (outcome !== "approved") {
           const result = declined(outcome, "the code wasn't changed")
@@ -461,8 +571,14 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
           return result
         }
       }
-      const written = code.writeCode({ language: str(args?.language), content, mode, filename: str(args?.filename) })
-      const result: ToolResult = { ...written, status: written.ok ? "applied" : "failed" }
+      // Re-read the handle: after an approval wait the one captured above
+      // can hold stale file state (the learner may have kept typing).
+      const code = codeHandle()
+      if (!code || epochRef.current !== epoch) return declined("cancelled", "the code wasn't changed")
+      const written = code.writeCode({ language, content, mode, filename })
+      const languageNote =
+        rawLanguage && !language && written.ok ? ` The language "${rawLanguage}" isn't supported here, so the file's language was left unchanged.` : ""
+      const result: ToolResult = { ...written, message: `${written.message}${languageNote}`, status: written.ok ? "applied" : "failed" }
       logResult("code", mode, result)
       return result
     })
@@ -470,9 +586,9 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
 
   function codeRun(args: any): Promise<ToolResult> {
     return once("run_code", args, async () => {
-      const code = await ensureCode()
-      if (!code) return notReady("code")
-      const summary = await code.runCode({ filename: str(args?.filename) })
+      const wait = await openAndWait("code", codeHandle)
+      if (!wait.ok) return notReady("code", wait.reason)
+      const summary = await wait.handle.runCode({ filename: str(args?.filename) })
       const ok = summary.status === "success"
       const result: ToolResult = {
         ok,
@@ -493,57 +609,61 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
 
   // --- Notes tools ---------------------------------------------------------------
 
-  function notesOp(name: string, args: any, run: (notes: NotesHandle) => Promise<ToolResult> | ToolResult) {
+  // Opens Notes if needed, waits until it is ready, then runs the operation.
+  function notesOp(name: string, args: any, run: (notes: NotesHandle, epoch: number) => Promise<ToolResult> | ToolResult) {
     return once(name, args, async () => {
-      const notes = await ensureNotes()
-      if (!notes) return notReady("notes")
-      const result = await run(notes)
+      const epoch = epochRef.current
+      const wait = await openAndWait("notes", notesHandle)
+      if (!wait.ok) return notReady("notes", wait.reason)
+      const result = await run(wait.handle, epoch)
       logResult("notes", name, result)
       return result
     })
+  }
+
+  // Asks before a Notes change; resolves to the live Notes handle to apply it
+  // with, or to a ready-made "not done" result.
+  async function approveNotesChange(
+    epoch: number,
+    description: string,
+    extra: { details?: string; preview?: string },
+    what: string
+  ): Promise<{ notes: NotesHandle } | { result: ToolResult }> {
+    const outcome = await askApproval("notes", epoch, description, extra, () => !!notesHandle())
+    if (outcome !== "approved") return { result: declined(outcome, what) }
+    const notes = notesHandle()
+    return notes ? { notes } : { result: declined("cancelled", what) }
   }
 
   function fromNotes(r: { ok: boolean; message: string; [k: string]: unknown }): ToolResult {
     return { ...r, status: r.ok ? "applied" : "failed" }
   }
 
-  function openWorkspaceTool(args: { tool: WorkspaceTool }): ToolResult {
-    if (!WORKSPACE_TOOLS.some((t) => t.id === args?.tool)) {
-      return { ok: false, status: "invalid", message: "That isn't a tool I can open." }
-    }
-    openToolInternal(args.tool)
-    return { ok: true, status: "applied", message: `Opened ${TOOL_ICON_LABEL[args.tool]}.` }
-  }
-
   // --- Register every Tutor-facing client tool. Each name must match a
   // "client tool" configured on the Study Room Tutor's ElevenLabs agent -
-  // see AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md's "PHASE 4 ... ACTION
-  // REQUIRED" tool table for the exact names/parameters to add there.
+  // see AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md for the exact
+  // names/parameters configured there.
   //
   // Results are structured objects (sent as JSON strings by useTutorTool)
-  // with `ok`, `status` (applied | declined | timed_out | failed | not_found |
-  // invalid) and a human-readable `message`, plus ids/data the Tutor can use
-  // in a follow-up call (e.g. nodeIds -> connect_whiteboard_elements).
+  // with `ok`, `status` (applied | declined | timed_out | cancelled | failed |
+  // not_found | invalid) and a human-readable `message`, plus ids/data the
+  // Tutor can use in a follow-up call (e.g. nodeIds -> connect_whiteboard_elements).
   //
   // useConversationClientTool only types a handler's args as
   // Record<string, unknown>, so args are passed through as `any` and
   // validated inside each tool.
 
   useTutorTool("get_workspace_context", () => getWorkspaceContext())
-  useTutorTool("open_workspace_tool", (args) => openWorkspaceTool(args as any))
+  useTutorTool("open_workspace_tool", (args) => openWorkspaceTool(args))
 
   // Whiteboard
   useTutorTool("create_whiteboard_diagram", (args) =>
-    whiteboardTool("create_diagram", args, (wb) => whiteboardTools.createDiagram(wb, args, confirmFor("whiteboard")))
+    whiteboardTool("create_diagram", args, (wb, confirm) => whiteboardTools.createDiagram(wb, args, confirm))
   )
-  useTutorTool("highlight_whiteboard_elements", async (args) => {
-    const wb = await ensureWhiteboard()
-    return wb ? whiteboardHighlight(args as any) : notReady("whiteboard")
-  })
-  useTutorTool("clear_whiteboard", async () => {
-    const wb = await ensureWhiteboard()
-    return wb ? once("clear_whiteboard", {}, whiteboardClear) : notReady("whiteboard")
-  })
+  useTutorTool("highlight_whiteboard_elements", (args) =>
+    whiteboardTool("highlight", args, (wb) => whiteboardTools.highlightElements(wb, args))
+  )
+  useTutorTool("clear_whiteboard", () => whiteboardTool("clear_whiteboard", {}, (wb, confirm) => whiteboardClear(wb, confirm)))
   useTutorTool("add_whiteboard_element", (args) =>
     whiteboardTool("add_element", args, (wb) => whiteboardTools.addElement(wb, args))
   )
@@ -554,7 +674,7 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
     whiteboardTool("move_element", args, (wb) => whiteboardTools.moveElement(wb, args))
   )
   useTutorTool("delete_whiteboard_elements", (args) =>
-    whiteboardTool("delete_elements", args, (wb) => whiteboardTools.deleteElements(wb, args, confirmFor("whiteboard")))
+    whiteboardTool("delete_elements", args, (wb, confirm) => whiteboardTools.deleteElements(wb, args, confirm))
   )
   useTutorTool("connect_whiteboard_elements", (args) =>
     whiteboardTool("connect_elements", args, (wb) => whiteboardTools.connectElements(wb, args))
@@ -567,10 +687,10 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   useTutorTool("write_code", (args) => codeWrite(args))
   useTutorTool("run_code", (args) => codeRun(args))
   useTutorTool("read_code", async (args) => {
-    const code = await ensureCode()
-    if (!code) return notReady("code")
+    const wait = await openAndWait("code", codeHandle)
+    if (!wait.ok) return notReady("code", wait.reason)
     const a = args as any
-    const r = code.readFile({
+    const r = wait.handle.readFile({
       filename: str(a?.filename),
       startLine: typeof a?.start_line === "number" ? a.start_line : undefined,
       endLine: typeof a?.end_line === "number" ? a.end_line : undefined,
@@ -582,17 +702,20 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
   useTutorTool("create_note", (args) =>
     notesOp("create_note", args, (notes) => {
       const a = args as any
+      const content = str(a?.content) ?? ""
+      if (!content.trim()) return { ok: false, status: "invalid", message: "create_note needs `content`." }
+      const heading = str(a?.heading)?.trim() || undefined
       const position: NotesInsertPosition = ["start", "after_section", "after_selection"].includes(a?.position) ? a.position : "end"
-      return fromNotes(notes.insertMarkdown({ markdown: str(a?.content) ?? "", heading: str(a?.heading), position, section: str(a?.section) }))
+      return fromNotes(notes.insertMarkdown({ markdown: content, heading, position, section: str(a?.section) }))
     })
   )
   useTutorTool("read_notes", async (args) => {
-    const notes = await ensureNotes()
-    if (!notes) return notReady("notes")
-    return fromNotes(notes.readNotes({ section: str((args as any)?.section) }))
+    const wait = await openAndWait("notes", notesHandle)
+    if (!wait.ok) return notReady("notes", wait.reason)
+    return fromNotes(wait.handle.readNotes({ section: str((args as any)?.section) }))
   })
   useTutorTool("edit_note_section", (args) =>
-    notesOp("edit_note_section", args, async (notes) => {
+    notesOp("edit_note_section", args, async (notes, epoch) => {
       const a = args as any
       const section = str(a?.section) ?? ""
       const markdown = str(a?.content) ?? ""
@@ -602,30 +725,38 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
       // Rewriting a section that contains the learner's own writing needs
       // their approval; appending, or rewriting Nova's own text, doesn't.
       if (mode === "replace" && info.hasLearnerContent) {
-        const outcome = await requestApproval("notes", `Nova wants to rewrite your "${info.heading}" section. Allow it?`, {
-          details: str(a?.explanation),
-          preview: markdown,
-        })
-        if (outcome !== "approved") return declined(outcome, "the section wasn't changed")
+        const approval = await approveNotesChange(
+          epoch,
+          `Nova wants to rewrite your "${info.heading}" section. Allow it?`,
+          { details: str(a?.explanation), preview: markdown },
+          "the section wasn't changed"
+        )
+        if ("result" in approval) return approval.result
+        return fromNotes(approval.notes.editSection({ section, markdown, mode }))
       }
       return fromNotes(notes.editSection({ section, markdown, mode }))
     })
   )
   useTutorTool("delete_note_section", (args) =>
-    notesOp("delete_note_section", args, async (notes) => {
+    notesOp("delete_note_section", args, async (notes, epoch) => {
       const section = str((args as any)?.section) ?? ""
       const info = notes.inspectSection(section)
       if (!info) return fromNotes(notes.deleteSection(section))
-      const outcome = await requestApproval("notes", `Nova wants to delete the "${info.heading}" section from your notes. Allow it?`, {
-        details: `${info.blockCount} block(s)${info.hasLearnerContent ? ", including text you wrote" : ""}.`,
-        preview: info.markdown,
-      })
-      if (outcome !== "approved") return declined(outcome, "nothing was deleted")
-      return fromNotes(notes.deleteSection(section))
+      const approval = await approveNotesChange(
+        epoch,
+        `Nova wants to delete the "${info.heading}" section from your notes. Allow it?`,
+        {
+          details: `${info.blockCount} block(s)${info.hasLearnerContent ? ", including text you wrote" : ""}.`,
+          preview: info.markdown,
+        },
+        "nothing was deleted"
+      )
+      if ("result" in approval) return approval.result
+      return fromNotes(approval.notes.deleteSection(section))
     })
   )
   useTutorTool("restructure_notes", (args) =>
-    notesOp("restructure_notes", args, async (notes) => {
+    notesOp("restructure_notes", args, async (notes, epoch) => {
       const a = args as any
       const hasContent = notes.getPlainText().trim().length > 0
       if (Array.isArray(a?.sections) && a.sections.length > 0) {
@@ -635,26 +766,34 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
           heading: str(s?.heading) ?? "",
           blockIds: Array.isArray(s?.block_ids) ? s.block_ids.map(String) : Array.isArray(s?.blockIds) ? s.blockIds.map(String) : [],
         }))
-        if (hasContent) {
-          const outcome = await requestApproval("notes", "Nova wants to reorganise your notes into sections. Allow it?", {
+        if (!hasContent) return fromNotes(notes.reorganize({ sections }))
+        const approval = await approveNotesChange(
+          epoch,
+          "Nova wants to reorganise your notes into sections. Allow it?",
+          {
             details: `New sections: ${sections.map((s: { heading: string }) => s.heading).filter(Boolean).join(", ")}. Nothing is deleted - anything not placed goes under "Other notes".`,
-          })
-          if (outcome !== "approved") return declined(outcome, "the notes weren't reorganised")
-        }
-        return fromNotes(notes.reorganize({ sections }))
+          },
+          "the notes weren't reorganised"
+        )
+        if ("result" in approval) return approval.result
+        return fromNotes(approval.notes.reorganize({ sections }))
       }
-      // Legacy shape: a whole new document. Replaces everything, so the
-      // approval says so explicitly.
+      // The dashboard's shape: the complete reorganised document as
+      // Markdown. Replaces everything, so the approval says so explicitly.
       const markdown = str(a?.content) ?? ""
-      if (!markdown.trim()) return { ok: false, status: "invalid", message: "restructure_notes needs `sections` (preferred) or `content`." }
-      if (hasContent) {
-        const outcome = await requestApproval("notes", "Nova wants to replace your entire notes with a restructured version. Allow it?", {
+      if (!markdown.trim()) return { ok: false, status: "invalid", message: "restructure_notes needs `content` (the complete reorganised notes)." }
+      if (!hasContent) return fromNotes(notes.replaceAllWithMarkdown(markdown))
+      const approval = await approveNotesChange(
+        epoch,
+        "Nova wants to replace your entire notes with a restructured version. Allow it?",
+        {
           details: "This replaces everything currently in Notes. Prefer reorganising existing sections where possible.",
           preview: markdown,
-        })
-        if (outcome !== "approved") return declined(outcome, "the notes weren't changed")
-      }
-      return fromNotes(notes.replaceAllWithMarkdown(markdown))
+        },
+        "the notes weren't changed"
+      )
+      if ("result" in approval) return approval.result
+      return fromNotes(approval.notes.replaceAllWithMarkdown(markdown))
     })
   )
 
@@ -755,9 +894,17 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
                           <WhiteboardPanel sessionId={sessionId} userId={userId} onApiReady={handleWhiteboardApiReady} />
                         )}
                         {tool === "code" && (
-                          <CodeEditorPanel ref={codeRef} sessionId={sessionId} userId={userId} onLearnerRun={handleLearnerRun} />
+                          <CodeEditorPanel
+                            ref={codeRef}
+                            sessionId={sessionId}
+                            userId={userId}
+                            onLearnerRun={handleLearnerRun}
+                            onReady={handleCodeReady}
+                          />
                         )}
-                        {tool === "notes" && <NotesPanel ref={notesRef} sessionId={sessionId} userId={userId} />}
+                        {tool === "notes" && (
+                          <NotesPanel ref={notesRef} sessionId={sessionId} userId={userId} onReady={handleNotesReady} />
+                        )}
                       </div>
                     </div>
                   </div>

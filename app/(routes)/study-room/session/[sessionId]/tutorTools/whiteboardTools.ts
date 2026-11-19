@@ -20,12 +20,14 @@
 
 import type { ExcalidrawApi } from "../WhiteboardPanel"
 
-export type ApprovalOutcome = "approved" | "rejected" | "timed_out"
+// "cancelled" = the request was withdrawn without a learner decision: the
+// panel was closed or the Study Room session ended/changed while waiting.
+export type ApprovalOutcome = "approved" | "rejected" | "timed_out" | "cancelled"
 export type Confirm = (description: string, details?: string) => Promise<ApprovalOutcome>
 
 export interface ToolResult {
   ok: boolean
-  status: "applied" | "declined" | "timed_out" | "failed" | "not_found" | "invalid"
+  status: "applied" | "declined" | "timed_out" | "cancelled" | "failed" | "not_found" | "invalid"
   message: string
   [key: string]: unknown
 }
@@ -87,6 +89,14 @@ async function converter() {
 }
 
 // --- Scene reading ----------------------------------------------------------
+
+function notApproved(outcome: ApprovalOutcome, nothingDone: string, declinedMessage: string): ToolResult {
+  if (outcome === "timed_out") return { ok: false, status: "timed_out", message: `The learner didn't respond in time; ${nothingDone}.` }
+  if (outcome === "cancelled") {
+    return { ok: false, status: "cancelled", message: `The whiteboard was closed or the session changed before the change could be made; ${nothingDone}.` }
+  }
+  return { ok: false, status: "declined", message: declinedMessage }
+}
 
 function liveElements(api: ExcalidrawApi): any[] {
   return (api.getSceneElements() as readonly any[]).filter((el) => !el.isDeleted)
@@ -380,13 +390,7 @@ export async function createDiagram(api: ExcalidrawApi, args: any, confirm: Conf
       "Nova wants to replace everything on the whiteboard with a new diagram. Allow it?",
       `${existing.length} existing element(s) would be removed.`
     )
-    if (outcome !== "approved") {
-      return {
-        ok: false,
-        status: outcome === "timed_out" ? "timed_out" : "declined",
-        message: outcome === "timed_out" ? "The learner didn't respond in time; nothing was replaced." : "The learner declined replacing the whiteboard.",
-      }
-    }
+    if (outcome !== "approved") return notApproved(outcome, "nothing was replaced", "The learner declined replacing the whiteboard.")
   }
 
   const rel =
@@ -637,15 +641,11 @@ export async function deleteElements(api: ExcalidrawApi, args: any, confirm: Con
     `Nova wants to delete ${targets.length} element(s) from the whiteboard. Allow it?`,
     `${names.join(", ")}${targets.length > names.length ? ", ..." : ""}${extraArrows ? ` (plus ${extraArrows} attached connection(s))` : ""}`
   )
-  if (outcome !== "approved") {
-    return {
-      ok: false,
-      status: outcome === "timed_out" ? "timed_out" : "declined",
-      message: outcome === "timed_out" ? "The learner didn't respond in time; nothing was deleted." : "The learner declined the deletion.",
-    }
-  }
-  // Drop references to removed arrows from the shapes that remain.
-  const next = all
+  if (outcome !== "approved") return notApproved(outcome, "nothing was deleted", "The learner declined the deletion.")
+  // Drop references to removed arrows from the shapes that remain. Re-read
+  // the scene: the learner may have drawn while the approval was pending,
+  // and the pre-approval snapshot would silently discard that work.
+  const next = liveElements(api)
     .filter((el) => !removal.has(el.id))
     .map((el) => {
       const refs = el.boundElements ?? []
@@ -728,4 +728,67 @@ export async function updateConnection(api: ExcalidrawApi, args: any): Promise<T
     api.updateScene({ elements: next })
   }
   return { ok: true, status: "applied", message: `Updated connection ${arrow.id}.`, connectionId: arrow.id }
+}
+
+// highlight_whiteboard_elements - recolours existing elements whose label
+// (case-insensitive substring) or id matches. A matching shape label also
+// highlights the shape it belongs to. Nothing else on the board is touched:
+// only matched elements get new colours, everything else is passed through.
+export function highlightElements(api: ExcalidrawApi, args: any): ToolResult {
+  const labels: string[] = (Array.isArray(args?.labels) ? args.labels : typeof args?.labels === "string" ? [args.labels] : [])
+    .map((l: unknown) => cleanText(l, 120))
+    .filter(Boolean)
+  const ids: string[] = (Array.isArray(args?.ids) ? args.ids : []).filter((v: unknown) => typeof v === "string")
+  if (labels.length === 0 && ids.length === 0) {
+    return { ok: false, status: "invalid", message: "highlight_whiteboard_elements needs at least one label." }
+  }
+  const all = liveElements(api)
+  const byId = indexById(all)
+  const hits = new Set<string>()
+  const matchedLabels: string[] = []
+  const unmatchedLabels: string[] = []
+  for (const label of labels) {
+    const needle = label.toLowerCase()
+    let found = false
+    for (const el of all) {
+      if (el.type !== "text" || !String(el.text ?? "").toLowerCase().includes(needle)) continue
+      found = true
+      hits.add(el.id)
+      if (el.containerId && byId.has(el.containerId)) hits.add(el.containerId)
+    }
+    ;(found ? matchedLabels : unmatchedLabels).push(label)
+  }
+  const unmatchedIds = ids.filter((id) => !byId.has(id))
+  for (const id of ids) if (byId.has(id)) hits.add(id)
+
+  if (hits.size === 0) {
+    return {
+      ok: false,
+      status: "not_found",
+      message: `Nothing on the whiteboard matched ${labels.length ? labels.map((l) => `"${l}"`).join(", ") : "those ids"}.`,
+      ...(unmatchedLabels.length ? { unmatchedLabels } : {}),
+      ...(unmatchedIds.length ? { unmatchedIds } : {}),
+    }
+  }
+  const next = (api.getSceneElements() as readonly any[]).map((el) =>
+    hits.has(el.id) && !el.isDeleted
+      ? bump(el, {
+          strokeColor: "#eab308",
+          ...(el.type === "text" || LINEAR_TYPES.has(el.type) ? {} : { backgroundColor: "#fef9c3" }),
+        })
+      : el
+  )
+  api.updateScene({ elements: next })
+  const partial = unmatchedLabels.length > 0 || unmatchedIds.length > 0
+  return {
+    ok: true,
+    status: "applied",
+    message: `Highlighted ${hits.size} element(s) on the whiteboard${matchedLabels.length ? ` for ${matchedLabels.map((l) => `"${l}"`).join(", ")}` : ""}.${
+      unmatchedLabels.length ? ` No match for ${unmatchedLabels.map((l) => `"${l}"`).join(", ")}.` : ""
+    }`,
+    highlightedIds: [...hits],
+    ...(partial ? { partial: true } : {}),
+    ...(unmatchedLabels.length ? { unmatchedLabels } : {}),
+    ...(unmatchedIds.length ? { unmatchedIds } : {}),
+  }
 }
