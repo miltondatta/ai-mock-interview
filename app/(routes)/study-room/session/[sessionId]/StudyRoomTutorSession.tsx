@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useContext, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useContext, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { ConversationProvider } from "@elevenlabs/react"
 import { useMutation } from "convex/react"
@@ -319,4 +319,8 @@ function StudyRoomTutorSession({ sessionId, room }: StudyRoomTutorSessionProps) 
   )
 }
 
-export default StudyRoomTutorSession
+// M3 - memo'd so the parent session page's per-conversation-turn re-renders
+// (see page.tsx's `tutorRoom` comment) stop here instead of reaching
+// TutorCall/ConversationProvider at all when sessionId/room haven't
+// actually changed.
+export default memo(StudyRoomTutorSession)

@@ -157,21 +157,24 @@ const Workspace = forwardRef<WorkspaceHandle, WorkspaceProps>(function Workspace
 
   const breakpoint = useBreakpoint()
 
-  // Restore the session's saved workspace layout exactly once - M4 adds
-  // `maximizedTool` ("expanded/collapsed states") and `panelWeights`
-  // ("panel sizes") on top of M3's openTools/activeTool.
+  // M4 - panel *visibility* (which tools are open, which is active/
+  // maximized) is intentionally never restored from a previous visit: every
+  // entry into a Study Room - Start Learning, Continue Learning, Open Room,
+  // or Repeat Lesson - must land on the default workspace (Tutor
+  // conversation only, nothing open), per the brief. `openOrder`/
+  // `activeTool`/`maximizedTool` already default to closed/null in this
+  // component's initial state above, so there is nothing to do here for
+  // them - this effect only restores `panelWeights` (the relative size
+  // panels split into once they *are* open), which is a size preference,
+  // not visibility, so it isn't covered by that requirement. Panel
+  // *content* (whiteboard drawings, code, notes) is a separate concern
+  // entirely - each panel loads its own saved content straight from its own
+  // Convex query the moment it's actually opened (see WhiteboardPanel/
+  // CodeEditorPanel/NotesPanel), independently of this layout row.
   useEffect(() => {
     if (layoutLoadedRef.current || savedLayout === undefined) return
     layoutLoadedRef.current = true
-    if (savedLayout) {
-      // Merge rather than overwrite: a Tutor tool call may already have
-      // opened a panel before the saved layout arrived, and dropping it here
-      // would unmount the panel that call is waiting on.
-      setOpenOrder((prev) => [...savedLayout.openTools, ...prev.filter((t) => !savedLayout.openTools.includes(t))])
-      setActiveTool((prev) => prev ?? savedLayout.activeTool ?? savedLayout.openTools[0] ?? null)
-      setMaximizedTool(savedLayout.maximizedTool ?? null)
-      if (savedLayout.panelWeights) setWeights(savedLayout.panelWeights)
-    }
+    if (savedLayout?.panelWeights) setWeights(savedLayout.panelWeights)
   }, [savedLayout])
 
   useEffect(() => {

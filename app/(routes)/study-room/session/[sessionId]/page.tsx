@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useContext } from "react"
+import React, { useContext, useMemo } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { useQuery } from "convex/react"
@@ -21,6 +21,23 @@ function StudyRoomSessionPage() {
     api.StudyRoom.GetStudyRoomSession,
     userId ? { userId, sessionId } : "skip"
   )
+
+  // M3 - GetStudyRoomSession re-fires on every single conversation turn
+  // (AppendStudyRoomMessage patches this exact session row's updatedAt),
+  // which would otherwise hand StudyRoomTutorSession a brand-new `room`
+  // object identity dozens of times per minute while the live Tutor call is
+  // up. Memoizing it on the fields that actually matter, together with
+  // StudyRoomTutorSession being memo'd, keeps that per-turn reactivity from
+  // cascading into the live audio call's component tree at all - it only
+  // ever re-renders for a reason that actually matters to it. Computed
+  // ahead of the early returns below so this hook is never called
+  // conditionally.
+  const tutorRoom = useMemo(() => {
+    const room = data?.room
+    if (!room) return null
+    return { _id: room._id, title: room.title, topic: room.topic, objective: room.objective }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.room?._id, data?.room?.title, data?.room?.topic, data?.room?.objective])
 
   if (data === undefined) {
     return (
@@ -43,12 +60,7 @@ function StudyRoomSessionPage() {
 
   // Live AI Tutor experience - voice + text, the actual M2 deliverable.
   if (session.status === "in_progress") {
-    return (
-      <StudyRoomTutorSession
-        sessionId={sessionId}
-        room={{ _id: room._id, title: room.title, topic: room.topic, objective: room.objective }}
-      />
-    )
+    return <StudyRoomTutorSession sessionId={sessionId} room={tutorRoom!} />
   }
 
   // Session already ended (completed or abandoned) - M4's full Session

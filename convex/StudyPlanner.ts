@@ -1,7 +1,7 @@
 import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { deleteStudyRoomCascade, findStudyRoomsForStudyPlan } from "./StudyRoom";
+import { deleteStudyRoomCascade, findStudyRoomsForStudyPlan, getLatestStudyRoomForTasks } from "./StudyRoom";
 import { taskLearningResourcesValidator } from "./schema";
 
 const LEVEL = v.union(v.literal("beginner"), v.literal("intermediate"), v.literal("advanced"));
@@ -220,6 +220,122 @@ export const GetDashboardStats = query({
       archivedPlans: plans.filter((p) => p.status === "archived").length,
       overallProgress,
     };
+  },
+});
+
+// --- Study Room Topic Sync ---------------------------------------------------
+// The Study Room dashboard's "My Study Rooms" section used to show only
+// rooms that already existed - a topic the learner hadn't started yet in AI
+// Study Room was invisible there, even though it already existed as a Study
+// Planner task. This query makes Study Planner the source of truth: every
+// task from every non-archived plan is returned as a "topic," each enriched
+// (via StudyRoom.getLatestStudyRoomForTasks, the only Study Room table
+// access this file performs) with whatever Study Room progress already
+// exists for it - or `studyRoomStatus: "not_started"` when none does.
+// Nothing here writes to either module's tables.
+export const GetStudyRoomTopics = query({
+  args: { userId: v.id("UserTable") },
+  handler: async (ctx, args) => {
+    const plans = await ctx.db
+      .query("studyPlans")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    const visiblePlans = [...plans]
+      .filter((p) => p.status !== "archived")
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    const perPlan = await Promise.all(
+      visiblePlans.map(async (plan) => {
+        const [phaseDocs, taskDocs] = await Promise.all([
+          ctx.db
+            .query("studyPlanPhases")
+            .withIndex("by_studyPlan_order", (q) => q.eq("studyPlanId", plan._id))
+            .collect(),
+          ctx.db
+            .query("studyPlanTasks")
+            .withIndex("by_studyPlan", (q) => q.eq("studyPlanId", plan._id))
+            .collect(),
+        ]);
+        return { plan, phasesById: new Map(phaseDocs.map((p) => [p._id, p])), tasks: taskDocs };
+      })
+    );
+
+    const allTaskIds = perPlan.flatMap(({ tasks }) => tasks.map((t) => t._id));
+    const roomByTask = await getLatestStudyRoomForTasks(ctx, args.userId, allTaskIds);
+
+    const topics: Array<{
+      taskId: Id<"studyPlanTasks">;
+      title: string;
+      description?: string;
+      completionCriteria?: string;
+      priority: "low" | "medium" | "high";
+      planId: Id<"studyPlans">;
+      planTitle: string;
+      planStatus: "active" | "paused" | "completed" | "archived";
+      currentLevel?: "beginner" | "intermediate" | "advanced";
+      learningGoal?: string;
+      phaseId?: Id<"studyPlanPhases">;
+      phaseTitle?: string;
+      objectives: string[];
+      // M5 - the task type icon on the dashboard's compact topic rows, taken
+      // from any learning resources already generated for this task
+      // (app/api/study-planner/task-resources) - undefined when none have
+      // been generated yet, in which case the UI falls back to a generic icon.
+      taskType?: "video" | "reading" | "practice" | "quiz" | "project" | "revision";
+      studyRoomStatus: "not_started" | "in_progress" | "completed";
+      roomStatus: "active" | "archived";
+      studyRoomId?: Id<"studyRooms">;
+      latestSessionId?: Id<"studyRoomSessions">;
+      totalSessions: number;
+      lastAccessedAt?: number;
+      createdAt: number;
+    }> = [];
+
+    for (const { plan, phasesById, tasks } of perPlan) {
+      const sorted = [...tasks].sort((a, b) => {
+        const orderA = a.phaseId ? phasesById.get(a.phaseId)?.order ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        const orderB = b.phaseId ? phasesById.get(b.phaseId)?.order ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.order - b.order;
+      });
+
+      for (const task of sorted) {
+        const phase = task.phaseId ? phasesById.get(task.phaseId) : undefined;
+        const roomInfo = roomByTask.get(task._id) ?? null;
+        const studyRoomStatus: "not_started" | "in_progress" | "completed" =
+          !roomInfo || !roomInfo.latestSessionStatus
+            ? "not_started"
+            : roomInfo.latestSessionStatus === "completed"
+              ? "completed"
+              : "in_progress";
+
+        topics.push({
+          taskId: task._id,
+          title: task.title,
+          description: task.description,
+          completionCriteria: task.completionCriteria,
+          priority: task.priority,
+          planId: plan._id,
+          planTitle: plan.title,
+          planStatus: plan.status,
+          currentLevel: plan.currentLevel,
+          learningGoal: plan.learningGoal,
+          phaseId: phase?._id,
+          phaseTitle: phase?.title,
+          objectives: phase?.objectives ?? [],
+          taskType: task.learningResources?.taskType,
+          studyRoomStatus,
+          roomStatus: roomInfo?.roomStatus ?? "active",
+          studyRoomId: roomInfo?.studyRoomId,
+          latestSessionId: roomInfo?.latestSessionId,
+          totalSessions: roomInfo?.totalSessions ?? 0,
+          lastAccessedAt: roomInfo?.lastAccessedAt,
+          createdAt: task.createdAt,
+        });
+      }
+    }
+
+    return topics;
   },
 });
 

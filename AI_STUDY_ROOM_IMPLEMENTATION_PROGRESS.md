@@ -1,10 +1,874 @@
 # AI Study Room Implementation Progress
 
-Last updated: 2026-11-19 (Phases 1-4 + client tool reliability pass - see the sections below, newest first)
+Last updated: 2026-11-20 (follow-up tweak: all phase sections collapsed by default - see the section
+immediately below) - previously 2026-11-20 (follow-up fix: end stray "stuck In Progress" sessions
+automatically, just under it) - previously 2026-11-20 (follow-up fix: duplicate rows still in Recent
+Sessions/History, below that) - previously 2026-11-20 (Compact Topic List UI and Duplicate Row
+Elimination, below that) - previously 2026-11-20 (Fix Automatic Whiteboard Opening on Continue and
+Repeat, below that) - previously 2026-11-20 (Fix Broken and Interrupted AI Tutor Voice, below that) -
+previously 2026-11-20 (Unique Session Per Topic + Duplicate Cleanup, below that) - previously
+2026-11-20 (Study Planner Topic Sync, below that) - previously 2026-11-19 (Phases 1-4 + client tool
+reliability pass - see the sections further down, newest first)
 
 ## Status: M1-M5 implemented in code. M2, M3 and M5 each have a manual ElevenLabs-dashboard step
 ## outside my reach - see all three "ACTION REQUIRED" sections below. Not tested (per explicit
 ## instruction). Not committed to git.
+
+---
+
+## FOLLOW-UP (2026-11-20): ALL PHASE SECTIONS COLLAPSED BY DEFAULT - CODE COMPLETE, NOT TESTED
+
+Requested directly: every Learning Phase section in "My Study Rooms" should start collapsed, not just
+every phase after the first one in each plan (the "Compact Topic List UI" milestone's own choice,
+flagged there as a judgment call worth confirming). `app/(routes)/study-room/PlanSection.tsx` -
+`PhaseSection` is now always rendered with `defaultOpen={false}` instead of `i === 0`. Purely a default-
+state change; expanding/collapsing, topic rows, actions and everything else are untouched.
+
+---
+
+## FOLLOW-UP (2026-11-20): END STRAY "STUCK IN PROGRESS" SESSIONS AUTOMATICALLY - CODE COMPLETE, NOT TESTED
+
+### What was reported
+
+After the Recent Sessions duplicate-filter fix just below, the user confirmed the remaining duplicate
+they saw was specifically in **Recent Sessions**, and asked for the stray "In Progress" row to actually
+be ended, not just hidden. Asked which fix they wanted (hide vs. actually end it) - they chose "end
+it" explicitly.
+
+### Root cause
+
+A session can end up stuck at `status: "in_progress"` forever if its tab disappeared without a clean
+disconnect - most plausibly a session started before Phase 1's lease/`beforeunload` tracking existed
+(see `AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md`'s Phase 1 section), or a genuine browser crash that
+never got to send its `pagehide`/`beforeunload` beacon. Nothing before this fix ever went back and
+corrected such a session - `EndStudyRoomSession` only ever runs from an explicit End Session click or a
+beacon that actually fires - so it sits there permanently, showing as a second "In Progress" entry
+alongside whatever the learner is actually doing now.
+
+### Fix
+
+Added `ReconcileStaleInProgressSessions` (`convex/StudyRoom.ts`), which reuses the existing Phase 1
+Tutor-lease mechanism as the "is this actually live right now" signal: for each of a user's
+`in_progress` sessions (via the existing `by_user_status` index), if it's been more than 2 minutes
+since its last update *and* it has no currently-live (unexpired) `studyRoomTutorLeases` row, it's
+treated the same as a normal abandonment - `status: "abandoned"`, `endedAt`/`durationSeconds` set,
+stale lease row (if any) removed. Nothing is deleted: the session's own transcript, notes and summary
+are completely untouched, exactly like a regular `EndStudyRoomSession(reason: "abandoned")` call. The
+2-minute grace period and the lease check together are what make this safe to run automatically and
+often - a session the learner is genuinely using right now always has a lease renewed every 20s
+(Phase 1), so it's never touched; only a session with nothing actually connected to it for a while
+qualifies.
+
+`app/(routes)/study-room/page.tsx` now calls this mutation once per dashboard load (a `useEffect` keyed
+on `userId`, fire-and-forget). This makes the fix self-service and automatic - the next time the
+learner opens `/study-room`, any genuinely stale session is corrected on their own action, without me
+running anything against the live database myself.
+
+### Files modified
+
+- `convex/StudyRoom.ts` - added `ReconcileStaleInProgressSessions` (and the `STALE_IN_PROGRESS_GRACE_MS`
+  constant, placed next to the existing Tutor-lease helpers it reuses).
+- `app/(routes)/study-room/page.tsx` - calls it once per dashboard load.
+
+No schema change, no change to `EndStudyRoomSession`/the lease mechanism itself, no change to any other
+feature.
+
+### Remaining limitations
+
+- The 2-minute grace window is a judgment call, not a value the user specified - long enough that a
+  session which just started (before its tab's first lease acquisition) is never mistakenly abandoned,
+  short enough to self-heal quickly on the next dashboard visit.
+- This only corrects sessions for the user who loads the dashboard (their own `userId`) - it doesn't
+  sweep every user's stale sessions in one pass, consistent with every other function in this module
+  being scoped to the calling user.
+- Not tested by me (per "don't test," which this conversation's instructions have consistently asked
+  for) - it will run for real the next time the affected user opens `/study-room`. First thing to
+  verify then: the previously-stuck "In Progress" row in Recent Sessions should become "Abandoned" (or
+  disappear entirely from Recent Sessions if its room also turns out to be a non-canonical duplicate,
+  per the fix just below).
+
+---
+
+## FOLLOW-UP (2026-11-20): DUPLICATE ROWS STILL IN RECENT SESSIONS/HISTORY - CODE COMPLETE, NOT TESTED
+
+### What was reported
+
+After the "Compact Topic List UI and Duplicate Row Elimination" milestone just below, the user
+reported a duplicate row was still visible in **Recent Sessions**.
+
+### Root cause
+
+The previous milestone's duplicate-row fix only touched `buildDashboardItems`
+(`app/(routes)/study-room/types.ts`), which feeds **"My Study Rooms"**. `GetRecentSessions` and
+`GetSessionHistory` (`convex/StudyRoom.ts`) are separate queries that read `studyRoomSessions`
+directly by `userId` and were never updated with the same canonical-room check - so a session
+belonging to an old, non-canonical duplicate room for a Study Planner task (the exact kind of leftover
+`CreateStudyRoom`'s M2 canonical lookup-or-create was meant to prevent going forward) still showed up
+in Recent Sessions and the full Session History, even after "My Study Rooms" itself stopped showing
+the duplicate room. Confirmed by reading both queries - neither ever called
+`getLatestStudyRoomForTasks`/`pickCanonicalRoom` (M2's own canonical-room helpers) at all.
+
+### Fix
+
+Added `resolveSessionRooms` (`convex/StudyRoom.ts`) - resolves each session's room once and, for a
+room tied to a Study Planner task, checks it against that task's canonical room (reusing M2's existing
+`getLatestStudyRoomForTasks`, the same function `GetStudyRoomTopics` and `CreateStudyRoom` already use,
+so all of these stay in agreement about which room is "the" one). `GetRecentSessions` and
+`GetSessionHistory` now filter out any session whose room fails that check before slicing to the
+requested limit. Nothing is deleted - a filtered-out session row is untouched in the database and
+starts appearing normally again on its own once `CleanupDuplicateStudyRooms` (M2) re-parents it onto
+the canonical room.
+
+### Files modified
+
+- `convex/StudyRoom.ts` - added `resolveSessionRooms`; `GetRecentSessions` and `GetSessionHistory` now
+  use it to filter out sessions belonging to a non-canonical duplicate room. No other function changed;
+  no schema change; "My Study Rooms," Start/Continue/Repeat/Open Room, Whiteboard/Code Editor/Notes,
+  the AI Tutor and Mock Interview are untouched.
+
+### Remaining limitations
+
+- `GetDashboardStats`'s session/room counts are still a raw count over all sessions/rooms and can still
+  be inflated by old duplicates (already flagged as a known limitation in the M2 and M5 sections below)
+  - not changed here since the reported symptom was specifically Recent Sessions, and the instruction
+    was to avoid touching other functionality.
+- This hides duplicate-room sessions from these two views; it does not merge them.
+  `CleanupDuplicateStudyRooms` (M2, further below) remains how to physically reconcile the underlying
+  data for a given user.
+- Not tested by me (per instruction). First thing to verify on resume: reload the dashboard and confirm
+  Recent Sessions no longer repeats a topic via a leftover duplicate room specifically (as opposed to a
+  legitimate second attempt of the same canonical room, which is still expected to show - see the M5
+  section below's note on `issue/issue03.png`).
+
+---
+
+## COMPACT TOPIC LIST UI AND DUPLICATE ROW ELIMINATION (2026-11-20) - CODE COMPLETE, NOT TESTED
+
+### Brief
+
+Two linked asks: redesign "My Study Rooms" from a grid of large cards (one per topic) into a
+compact, Study-Planner-style list grouped by Learning Plan -> Learning Phase -> Topic (reference
+screenshots `issue/issue02.png`, `issue/issue03.png`), and permanently eliminate the duplicate rows
+the user was still seeing for the same topic/session - a code/data fix, not a frontend dedup pass.
+
+### UI inspected and reused
+
+- **Study Planner's phase/task presentation**
+  (`app/(routes)/study-planner/[studyPlanId]/PhaseCard.tsx`) is the direct visual reference: a
+  collapsible phase header (chevron, title, `completed/total tasks · progress%`, status badge) over a
+  list of compact `TaskRow`s (small icon, title + description, metadata chips, small action icons on
+  the right - never a large full-width button). The Study Room redesign reuses this exact shape -
+  same `rounded-2xl border border-border bg-card` phase container, same chevron-rotate collapse
+  interaction, same compact row padding (`p-3`/`px-3 py-2.5`) - rather than inventing a new pattern.
+- **Study Room dashboard / My Study Rooms** (`app/(routes)/study-room/page.tsx`,
+  `RoomCard.tsx` as it stood after M1-M4): confirmed it was still one large card per topic in a
+  `grid-cols-1 lg:grid-cols-2` layout - exactly `issue/issue02.png`'s "45 topics, impossibly long
+  page" symptom.
+- **Existing grouping/filtering**: `GetStudyRoomTopics` (`convex/StudyPlanner.ts`, M1) already returns
+  topics in plan-then-phase-then-task order with `planId`/`planTitle`/`phaseId`/`phaseTitle` on every
+  row - the hierarchy the brief asks for was already present in the data, just never used for grouping
+  on the frontend (M1-M4 flattened everything into one list). The All/Active/Archived filter
+  (`FilterValue`/`FILTERS` in `page.tsx`) was reused unchanged - see "Search/filtering" below.
+- **The canonical room/session relationship** (M2: `CreateStudyRoom`'s idempotent lookup-or-create,
+  `pickCanonicalRoom`, `getLatestStudyRoomForTasks`) - read in full; this milestone's duplicate-row fix
+  builds directly on it rather than replacing it (see "Duplicate-row root cause" below).
+- **Recent Sessions** (`GetRecentSessions`, `SessionRow.tsx`) - confirmed unchanged and still correct:
+  it legitimately lists individual session *attempts* (can repeat a room's title across rows when a
+  topic was attempted more than once), each still pointing at its own real `studyRoomId` - never
+  misrepresenting an attempt as a separate canonical room. `issue/issue03.png` (two rows for the same
+  room, one in-progress/one completed) is exactly this intended behaviour, not the bug.
+- **Astra theme/components**: reused `border-border`/`bg-card`/`bg-primary/10 text-primary` icon
+  chips, the existing `TOPIC_STATUS_META` badge classes, `formatDateTime`, and the filter-chip markup
+  byte-for-byte from the pre-existing dashboard header - no new color tokens or typography introduced.
+
+### New topic grouping structure
+
+- `app/(routes)/study-room/types.ts` adds `StudyRoomPhaseGroup`, `StudyRoomPlanGroup`,
+  `GroupedStudyRoomItems` and `groupDashboardItems(items)`: buckets an already-filtered/searched
+  `StudyRoomDashboardItem[]` into Plan -> Phase -> topics, computing each phase's
+  `totalTopics`/`completedTopics`/`inProgressTopics`/`notStartedTopics`/`progress` (the brief's
+  required phase-level stats) and each plan's topic/completion totals. Order follows whatever order
+  `GetStudyRoomTopics` already returns (newest plan first, phase order, task order) - no extra
+  sorting. A dashboard item with no `planId` (a standalone room - manually created, or started from
+  Question Bank/Resume Match/Interview Review) has nothing to nest under and is returned separately as
+  `standalone`.
+- `StudyRoomDashboardItem` gained `planId`/`planTitle`/`phaseId`/`phaseTitle` (so grouping has
+  something to key off) and `taskType` (drives the row's leading icon); it lost the old `subtitle`
+  field (the "Phase · Plan" line every card used to repeat) since the enclosing phase/plan headers
+  already carry that context once, not per row.
+- **New components**: `TopicRow.tsx` (the compact horizontal row - icon, title/description, status
+  badge, last-accessed/session-count line, one compact action button) replaces the old `RoomCard.tsx`
+  (deleted - fully superseded, not used anywhere else); `PlanSection.tsx` (plan header + its
+  `PhaseSection`s, the latter being the actual collapsible unit, directly modelled on `PhaseCard.tsx`).
+  `page.tsx` renders one `PlanSection` per plan, then a flat `TopicRow` list for any `standalone` rooms
+  under an "Other Study Rooms" heading (only shown when there's at least one).
+- Per-topic action button: compact, bordered `text-primary` pill (`Start Learning` / `Continue` /
+  `Repeat`), not the old full-width solid-primary button - directly addressing "do not use large
+  full-width orange buttons for every topic." The topic title is the "Open Room" affordance (a link to
+  `/study-room/{id}` when a room exists) rather than a separate button, per "clicking the topic title
+  ... must open its existing canonical Study Room."
+- **Topic type icon**: `GetStudyRoomTopics` now also returns `taskType` from
+  `studyPlanTasks.learningResources.taskType` (video/reading/practice/quiz/project/revision) when a
+  task already has generated learning resources; `TopicRow` maps it to a matching lucide icon, falling
+  back to a generic icon when none has been generated yet ("when available," per the brief - this is
+  never inferred from the task's title text, which would be fragile).
+- **Search** (M5.3's "if useful"): a compact title-only search box next to the filter chips,
+  client-side `includes()` over the already-loaded list - applied together with the existing
+  All/Active/Archived filter before grouping, so neither can produce a duplicate or drop a topic the
+  other wouldn't have (both just narrow the same flat list that grouping is computed from afterward).
+
+### Duplicate-row root cause
+
+Confirmed by reading `buildDashboardItems` (`types.ts`) as it stood after M1-M4: a room was only
+excluded from the "standalone" fallback list when it was the *exact* `studyRoomId` a topic's
+`GetStudyRoomTopics` row pointed at - i.e. only that task's one **canonical** room (chosen by
+`pickCanonicalRoom`, M2). Any **older, non-canonical** room still sitting in `studyRooms` for that
+same `studyTaskId` - a genuine duplicate created before M2's idempotent `CreateStudyRoom` existed, or
+before a manually-run `CleanupDuplicateStudyRooms` pass - had no topic row pointing *at it specifically*,
+so it fell through to "standalone" and rendered as its own extra row for a topic that was already
+shown correctly elsewhere. This is exactly `issue/issue02.png`'s "45 rooms" for what should have been
+a much smaller topic count, and is a data/query-relationship gap, not a frontend rendering bug (the
+React keys were already unique per room/topic id - there was no accidental key collision, just two
+real, distinct rows legitimately representing the same topic).
+
+### Data/query corrections
+
+- **`convex/StudyRoom.ts`**: `buildRoomSummary` now also returns the room's own `studyTaskId`
+  (additive field; `GetUserStudyRooms`'s other behaviour is unchanged).
+- **`app/(routes)/study-room/types.ts`**: `buildDashboardItems` now excludes a room from "standalone"
+  whenever **its own `studyTaskId` matches any task Study Planner currently returns** - not just the
+  one canonical `studyRoomId` a topic happens to reference. This closes the gap for *every* leftover
+  duplicate for a task at once (canonical or not), using the actual stable task reference rather than
+  a title match or a `Set`/`filter` pass over the already-rendered rows, per the brief's explicit "do
+  not solve this only with JS Set operations." A room whose task was later deleted still surfaces
+  (its `studyTaskId` no longer matches any current task) so it isn't silently lost - consistent with
+  M1's original "handle a deleted/archived plan gracefully" design.
+- **Existing reconciliation tooling kept, not replaced**: `FindDuplicateStudyRooms`/
+  `CleanupDuplicateStudyRooms` (added in M2) remain the way to physically merge old duplicate rooms'
+  sessions onto their canonical room and archive the leftover shell (transcripts/notes/summaries
+  preserved, nothing deleted - see the M2 section below for the exact mechanics and how to run them).
+  This milestone's dashboard fix means duplicates are no longer **visible** immediately, regardless of
+  whether that cleanup has been run yet - the two are complementary: one fixes what the learner sees
+  right away, the other physically reconciles the database.
+- Confirmed, while investigating, that `GetStudyRoomTopics` itself cannot produce the same task twice
+  (each task belongs to exactly one plan, each plan/task table row is read with a single `.collect()`
+  per plan) - the only duplication source was the standalone-room fallback above, not the topics query.
+
+### Files modified
+
+- `convex/StudyPlanner.ts` - `GetStudyRoomTopics` also returns `taskType`.
+- `convex/StudyRoom.ts` - `buildRoomSummary` also returns `studyTaskId`.
+- `app/(routes)/study-room/types.ts` - `StudyRoomDashboardItem` restructured (plan/phase fields added,
+  `subtitle` removed); `buildDashboardItems`'s standalone-exclusion fixed; added `StudyRoomPhaseGroup`/
+  `StudyRoomPlanGroup`/`GroupedStudyRoomItems`/`groupDashboardItems`.
+- `app/(routes)/study-room/TopicRow.tsx` (**new**) - replaces `RoomCard.tsx` (**deleted**).
+- `app/(routes)/study-room/PlanSection.tsx` (**new**) - plan/phase grouping and collapse.
+- `app/(routes)/study-room/page.tsx` - renders the grouped structure instead of a card grid; adds the
+  search field; filter chips, stats cards, "Recently studied" chips and Recent Sessions untouched
+  beyond what the data-source/layout change required.
+
+No Convex schema or mutation changes; no changes to Study Planner generation, AI Tutor behaviour,
+Whiteboard/Code Editor/Notes, or Mock Interview.
+
+### Remaining limitations
+
+- `CleanupDuplicateStudyRooms` (M2) still has to be run explicitly per user to physically merge old
+  duplicate rooms' session history - this milestone only makes the dashboard stop *displaying* them;
+  see that section further down for exact invocation.
+- `GetDashboardStats`'s `totalRooms` count is still a raw count of `studyRooms` rows and will include
+  old duplicate/merged-away rooms until cleanup is run (documented as a known limitation already in the
+  M2 section) - unchanged by this milestone, since the brief's explicit ask was the topic *list*, not
+  this stat.
+- Search is a simple client-side title substring match over the already-loaded list - fine at the
+  scale this dashboard deals in, not a server-side/fuzzy search.
+- Collapsible phases default open only for the first phase of each plan (subsequent phases start
+  collapsed) to keep the initial view compact for a plan with many phases - a learner with few
+  phases/topics may find this slightly conservative; easy to change to "all open by default" if that
+  reads better in practice.
+- Not tested by me (per "Don't test yourself"). First things to verify on resume: confirm the "45
+  rooms" count drops to the real topic count once duplicates from before M2 exist in the test data (or
+  simulate by creating two rooms with the same `studyTaskId` directly); expand/collapse a phase;
+  confirm search narrows topics within their phases without breaking grouping; confirm Start/Continue/
+  Repeat and the title-click "Open Room" link all still work per row.
+
+---
+
+## FIX AUTOMATIC WHITEBOARD OPENING ON CONTINUE AND REPEAT (2026-11-20) - CODE COMPLETE, NOT TESTED
+
+### Brief
+
+Entering a Study Room via Continue Learning (or, before M2's fix, Repeat Lesson) could land the
+learner with the Whiteboard already open, instead of the default "Tutor conversation only" screen -
+even though they never asked for it.
+
+### Workspace state inspected
+
+- **`Workspace.tsx`** (`app/(routes)/study-room/session/[sessionId]/`) owns three pieces of workspace
+  state: panel *visibility* (`openOrder`/`activeTool`/`maximizedTool`, all local React state, default
+  `[]`/`null`/`null`), panel *sizing* (`weights`), and panel *content* - which it never holds itself;
+  each panel component (`WhiteboardPanel`/`CodeEditorPanel`/`NotesPanel`) loads and saves its own
+  content independently via its own Convex query/mutation (`GetWhiteboard`/`SaveWhiteboardSnapshot`,
+  etc. in `convex/StudyRoomWorkspace.ts`), keyed by `sessionId` alone.
+- **`studyRoomWorkspaceLayout`** (`convex/schema.ts`) is the persisted record of visibility + sizing -
+  one row per *session* (`studyRoomSessionId`), holding `openTools`/`activeTool`/`maximizedTool`/
+  `panelWeights`. `GetWorkspaceLayout`/`SaveWorkspaceLayout` (`convex/StudyRoomWorkspace.ts`) read/write
+  it; untouched by this fix.
+- **Mounting**: `TutorCall.tsx` renders `<Workspace>` unconditionally (as soon as `userId` is known),
+  toggling only a CSS `display` on its wrapping `<div>` based on `hasOpenTools` - confirmed (again) that
+  Workspace is a single, stable component instance for the lifetime of one `TutorCall` mount, not
+  conditionally mounted per tool. `WhiteboardPanel`/`CodeEditorPanel`/`NotesPanel` themselves *are*
+  mounted/unmounted as their tool enters/leaves `effectiveVisible` (derived from `openOrder`) - each
+  loads its own saved content the moment it mounts, independent of anything in this fix.
+  `closeTool(tool)` (`Workspace.tsx`) only updates local `openOrder`/`activeTool`/`maximizedTool` state
+  and resolves any pending panel waiters - it calls no content mutation, so closing a panel was already
+  confirmed not to touch its saved drawings/code/notes.
+  - Also checked (since it bears directly on "closing must not lose content"): each panel's debounced
+    save (`WhiteboardPanel`: 800ms via `saveTimerRef`; `CodeEditorPanel`: 600ms via `saveTimersRef`;
+    `NotesPanel`: same pattern) schedules a plain `setTimeout`, never cleared on unmount - so closing a
+    panel within the debounce window does not cancel or lose that pending save; the timer still fires
+    using its own closure/refs after the component unmounts. No change needed here - verified already
+    correct, not assumed.
+- **Session initialization/restore**: a resumed `in_progress` session (e.g. after Pause -> Continue)
+  reuses its *same* `sessionId`, so `GetWorkspaceLayout` legitimately finds that session's own
+  previously-saved layout row. A brand-new session (Start Learning, or Repeat Lesson after M2's fix,
+  which always creates a fresh session row) has no layout row at all yet. Either way, the bug (below)
+  was in what `Workspace.tsx` *did* with whatever `GetWorkspaceLayout` returned, not in which session
+  id was used.
+- **AI Tutor client-tool registration/execution** (`Workspace.tsx`'s `open_workspace_tool` and the
+  four content-creation tools, via `openAndWait`/`openToolInternal`) - read in full; unrelated to and
+  unaffected by this fix (see "AI Tutor tool behaviour" below).
+
+### Root cause
+
+`Workspace.tsx`'s layout-restore effect applied **all** of a session's saved layout - including
+`openTools`/`activeTool`/`maximizedTool` (visibility) - on mount, not just `panelWeights` (sizing):
+
+```ts
+setOpenOrder((prev) => [...savedLayout.openTools, ...prev.filter((t) => !savedLayout.openTools.includes(t))])
+setActiveTool((prev) => prev ?? savedLayout.activeTool ?? savedLayout.openTools[0] ?? null)
+setMaximizedTool(savedLayout.maximizedTool ?? null)
+```
+
+So continuing a session that still had the Whiteboard open from an earlier visit (e.g. the learner
+opened it, then clicked Pause without closing it first) restored it open again on the very next
+Continue - with no new request from the learner. Before M2's fix, Repeat Lesson reactivated that exact
+same session row (`RepeatStudyRoomSession`), so it inherited the identical problem; M2 already
+incidentally stopped that specific path (Repeat now always starts a fresh session row with no layout
+row to restore), but the underlying restore-on-mount behavior itself was still present and still wrong
+for Continue Learning - the brief calls for the default workspace on **every** entry point
+unconditionally, not "unless the session happens to be fresh."
+
+### Workspace visibility handling (the fix)
+
+`Workspace.tsx`'s layout-restore effect no longer sets `openOrder`/`activeTool`/`maximizedTool` from
+`savedLayout` at all - those already default to `[]`/`null`/`null` in this component's initial state,
+which is exactly the "no tool panel automatically open" default the brief asks for, and (since
+`Workspace` is a fresh component instance on every session-page mount, as confirmed above) that default
+now applies unconditionally on every entry point: Start Learning, Continue Learning, Open Room, and
+Repeat Lesson. The effect now only restores `panelWeights` (the relative size open panels split into -
+a sizing preference, not visibility, so it isn't covered by "no panel automatically open"). The
+"merge rather than overwrite" workaround the Client Tool Reliability pass added for a Tutor-opened
+panel racing the saved-layout query no longer applies either - there's nothing left for a restore to
+clobber, since nothing is restored. Manually opening a panel, or the Tutor opening one in response to
+an explicit request ("draw a flowchart", "show me a Python example", "make revision notes"), are both
+unaffected - both still go through the same `openToolInternal`/`openAndWait`, untouched by this fix.
+
+### Content persistence handling
+
+Unchanged, and confirmed separate from visibility by inspection (not just by convention): `Workspace.tsx`
+still writes the *same* `openTools`/`activeTool`/`maximizedTool`/`panelWeights` to
+`studyRoomWorkspaceLayout` on every change (`SaveWorkspaceLayout`, debounced 500ms) - saving was not
+touched, only what gets *read back and applied* on mount. Each panel's own content
+(`studyRoomWhiteboards`/`studyRoomCodeFiles`/`studyRoomNotes`) is untouched by this fix in every
+respect: no mutation call was added, removed, or changed in `convex/StudyRoomWorkspace.ts`, and no
+panel component was modified. Opening a panel still restores its previously saved content exactly as
+before (each panel's own `useQuery` + one-time-apply effect, e.g. `WhiteboardPanel.tsx`'s `saved`/
+`loadedRef`); closing one still never deletes anything (`closeTool` calls no content mutation, verified
+above).
+
+### Files modified
+
+- `app/(routes)/study-room/session/[sessionId]/Workspace.tsx` - layout-restore effect no longer applies
+  `openTools`/`activeTool`/`maximizedTool` from the saved layout; still applies `panelWeights`.
+
+No Convex schema, mutation, Whiteboard/Code Editor/Notes component, or AI Tutor tool changes - exactly
+matching this milestone's scope protection.
+
+### Remaining limitations
+
+- `panelWeights` (panel split sizing) is still restored across a resumed same-session Continue. This is
+  a deliberate reading of the brief (a size preference isn't "a tool panel automatically open"), not an
+  oversight - flagging it explicitly in case that reading is wrong and it should also reset.
+- `openTools`/`activeTool`/`maximizedTool` are still *written* to `studyRoomWorkspaceLayout` on every
+  change (unused for restore now, but harmless to keep - e.g. useful if a future feature wants to show
+  "what was open when this session ended" without auto-opening it). Removing the write path entirely
+  was intentionally left alone, as the brief only asked to stop the automatic *opening*.
+- Not tested by me (per "Don't test yourself"). First things to verify on resume: open the Whiteboard,
+  click Pause, click Continue Learning on the same session - confirm the Tutor screen comes up with
+  nothing open; ask the Tutor to "draw a flowchart" afterward and confirm the Whiteboard still opens and
+  the diagram still appears; reopen the Whiteboard manually afterward and confirm the earlier drawing is
+  still there.
+
+---
+
+## FIX BROKEN AND INTERRUPTED AI TUTOR VOICE (2026-11-20) - CODE COMPLETE, NOT TESTED
+
+### Brief
+
+Investigate and fix the AI Tutor's voice breaking/being interrupted during an active Study Room
+session. Required reading the entire audio pipeline end to end - this app's own code
+(`TutorCall.tsx`, `StudyRoomTutorSession.tsx`, the session page) and the vendored SDKs it sits on
+(`@elevenlabs/react` 1.13.0, `@elevenlabs/client` 1.21.0, `livekit-client` 2.22.0) - rather than
+guessing. No ElevenLabs/LiveKit replacement, no Mock Interview changes; neither was touched.
+
+### Audio pipeline components inspected
+
+- **Connection mode confirmed from the installed package, not assumed**: `conversation.startSession()`
+  (`TutorCall.tsx`) resolves to `@elevenlabs/client`'s `WebRTCConnection` (`utils/WebRTCConnection.js`),
+  which creates a `livekit-client` `Room` and calls `room.connect()` - this app uses **WebRTC via
+  LiveKit**, not the raw WebSocket/PCM-worklet transport (`platform/web/output.js`'s
+  `MediaDeviceOutput`, read for comparison, is the *other* transport's player and isn't used here).
+- **Where audio actually plays, read from the installed package**: on `RoomEvent.TrackSubscribed`,
+  `WebRTCConnection` calls `WebAudioAdapter.attachRemoteTrack` (`platform/web/webAudioAdapter.js`),
+  which does `const audioElement = track.attach(); ...; document.body.appendChild(audioElement)`. **The
+  Tutor's actual audio playback is a plain `<audio>` element LiveKit creates and appends directly to
+  `document.body` - entirely outside React's virtual DOM.** This is the single most important fact for
+  this investigation: no React re-render, re-mount, or state update anywhere in this app's component
+  tree can touch that element's playback, because React never manages it. Packet jitter, reordering,
+  and buffering for that track are handled by the browser's native WebRTC engine underneath
+  `livekit-client`, which this app (and even the ElevenLabs JS SDK) has no hook into and cannot
+  meaningfully "fix" at the JS level.
+- **`useConversation`/callback stability, read from the installed package**: `useStableCallbacks` +
+  `useRegisterCallbacks` (`@elevenlabs/react`) wrap every `onConnect`/`onMessage`/`onError`/`onDisconnect`
+  callback in a ref-backed indirection, re-synced via `useLayoutEffect` on every render. Passing new
+  inline callback objects into `useConversation({...})` on every `TutorCall` render (which this app
+  does) is explicitly designed for by the library and does not re-subscribe, tear down, or otherwise
+  disturb the live session - confirmed by reading the hook's source, not assumed.
+- **`ConversationProvider`'s `startSession`/`endSession`, read from the installed package**
+  (`ConversationProvider.js`): `startSession()` is a no-op if a conversation or an in-flight start
+  already exists (`if (conversationRef.current) return; if (lockRef.current) return;`) - the SDK itself
+  already guards against a double-start, so this app doesn't need to. `endSession()` synchronously
+  clears `conversationRef`/`conversation` state but only *starts* (does not await) the actual
+  `conv.endSession()` teardown (`room.disconnect()`, removing the `<audio>` element) - **it returns no
+  promise for that teardown to be awaited by a caller.**
+- **`TutorCall.tsx`/`StudyRoomTutorSession.tsx`/`session/[sessionId]/page.tsx`** - read in full; see
+  findings below.
+- Confirmed (`grep` across the session folder) that **no file other than `TutorCall.tsx`** calls
+  `useConversation`, `setVolume`, `endSession`, `sendUserActivity` or `setMuted` - Workspace.tsx and its
+  three panels (Whiteboard/Code/Notes) never touch the conversation/audio controls, so they're ruled out
+  as an independent source of interruption (consistent with the separate Client Tool Reliability pass
+  already having left `TutorCall` untouched).
+- Browser audio context lifecycle: no app code creates, suspends or recreates an `AudioContext` -
+  `TutorCall.tsx` never touches the Web Audio API directly; what little `AudioContext` use exists
+  (mic/output volume metering for the waveform) is entirely inside the SDK and is unaffected by anything
+  in this app's render tree.
+
+### Root cause identified
+
+**A — Interrupt can leave Nova's audio silenced for the rest of the session (the primary, confirmed
+defect).** `handleInterrupt()` calls `conversation.setVolume({ volume: 0 })` to silence Nova immediately
+(there is no SDK call to actually cancel her in-flight response - documented in Phase 1 and still true in
+1.21.0). Restoring that volume depended on exactly three signals: the learner's next transcribed/typed
+turn (`onMessage`, role `user`), an explicit `onInterruption` event, or a 1.2s timer that **only arms
+while `conversation.mode === "listening"`**. `mode` is driven by LiveKit's `ActiveSpeakersChanged`, which
+tracks the *agent's published track*, independent of this app's local `setVolume` - so it is entirely
+possible for `mode` to go straight from one "speaking" turn to the next **without ever passing through
+"listening"** (e.g. the agent's next reply starts before the interrupted one's queued audio has fully
+drained). If that happens, and the learner says nothing, **none of the three restore signals ever
+fires**, `setVolume({volume:0})` is never undone, and Nova stays silent - while the UI still reports her
+as "Speaking" (`conversation.mode` still flips normally) - for every subsequent turn of the session. This
+matches the reported symptom precisely: the Tutor's voice "breaks"/stops mid-lesson with no further
+audio, while everything else (transcript, UI) keeps working. Confirmed by tracing `conversation.mode`'s
+only producer (`ConversationModeProvider`, a plain 2-value `speaking`/`listening` state with no "idle" or
+timeout of its own) and `ActiveSpeakersChanged`'s handler in `WebRTCConnection.js` - not a guess.
+
+**B — Reconnect can briefly overlap the old and new audio connections.** `handleReconnect()` calls
+`conversation.endSession()` (fire-and-forget - see above, it returns nothing to await) and then
+immediately proceeds to `ensureMicrophonePermission()` / `requestFreshConnection()` / `startConversation()`.
+Because `endSession()`'s real teardown (disconnecting the old LiveKit room, removing its `<audio>`
+element) runs asynchronously with no promise exposed, the new `startConversation()` can begin before
+that teardown finishes - a window where two LiveKit rooms/audio elements could briefly coexist. This is
+a secondary finding (reconnect is a deliberate, infrequent action, not something happening continuously
+during a lesson) but matches the brief's "duplicate playback"/"handle reconnects without duplicate
+conversation instances" concerns directly.
+
+**C — Unrelated, but real, unnecessary re-render churn during active speech.** `GetStudyRoomSession`
+(`convex/StudyRoom.ts`) reads the session document that `AppendStudyRoomMessage` patches
+(`updatedAt`) on **every single conversation turn** - so the `useQuery` in
+`session/[sessionId]/page.tsx` re-delivers a brand-new `data` object, and therefore a brand-new `room`
+object literal, every time Nova or the learner says anything. That cascaded through
+`StudyRoomSessionPage` -> `StudyRoomTutorSession` -> `TutorCall` on every turn even though neither
+`sessionId` nor any field of `room` had actually changed. Confirmed this doesn't *break* audio (per the
+`<audio>`-element-lives-outside-React finding above) but it is exactly the "unnecessary state
+updates"/"excessive rerenders" the brief's section 5 asks to avoid, and is a clean, low-risk thing to
+fix regardless.
+
+**Ruled out, with evidence, not assumption:** React component remounting during speech (the live-call
+subtree's component type/position is identical across every lease/connection state transition while a
+session stays open - traced every branch in `StudyRoomTutorSession`); duplicate conversation instances
+from re-renders (the SDK's own `startSession` already no-ops if one exists, see above); AudioContext
+suspension/recreation by app code (no app code touches the Web Audio API); network bandwidth as the
+*sole* explanation (no evidence either way was available from this repo, and - per the brief - this
+wasn't assumed; A and B above are concrete, code-level causes independent of network conditions).
+
+### Changes implemented
+
+1. **`app/(routes)/study-room/session/[sessionId]/TutorCall.tsx`** (fixes A and B):
+   - Added `INTERRUPT_HARD_TIMEOUT_MS` (8s) and `interruptHardTimeoutRef`: `handleInterrupt()` now also
+     arms an unconditional fallback timer that calls `finishInterrupt()` regardless of
+     `conversation.mode`, guaranteeing Nova's audio is restored within a bounded time even when the
+     mode-gated settle timer never arms. `finishInterrupt()`/`resetInterrupt()` clear it; the unmount
+     cleanup effect clears it too. The existing three faster restore paths (learner's turn, explicit
+     `onInterruption`, the 1.2s "listening" settle timer) are unchanged - this is a safety net underneath
+     them, not a replacement.
+   - Added `RECONNECT_TEARDOWN_GRACE_MS` (250ms) and a `sleep()` helper: `handleReconnect()` now waits
+     this long right after calling `conversation.endSession()` before proceeding to
+     `ensureMicrophonePermission()`/`requestFreshConnection()`/`startConversation()`. Documented in code
+     as a best-effort mitigation, not a guarantee - the SDK's `endSession()` exposes no promise for its
+     real teardown, so there is nothing to await directly.
+2. **`app/(routes)/study-room/session/[sessionId]/page.tsx`** (fixes C): the `room` object handed to
+   `StudyRoomTutorSession` is now built with `useMemo`, keyed on `room._id`/`title`/`topic`/`objective`
+   (computed ahead of the early `data === undefined`/`null` returns so the hook is never called
+   conditionally) instead of a fresh object literal on every render.
+3. **`app/(routes)/study-room/session/[sessionId]/StudyRoomTutorSession.tsx`** (fixes C): default export
+   wrapped in `React.memo`, so with a stable `room` reference and the already-stable `sessionId` string,
+   `GetStudyRoomSession`'s per-turn reactivity no longer re-renders `StudyRoomTutorSession`/`TutorCall`/
+   `ConversationProvider` at all when nothing relevant changed.
+
+Preserved untouched, as instructed: the ElevenLabs Study Room agent/voice configuration, the Mock
+Interview agent and its own audio pipeline, Study Planner, billing, and everything in Workspace.tsx and
+its three panels.
+
+### Files modified
+
+- `app/(routes)/study-room/session/[sessionId]/TutorCall.tsx`
+- `app/(routes)/study-room/session/[sessionId]/page.tsx`
+- `app/(routes)/study-room/session/[sessionId]/StudyRoomTutorSession.tsx`
+
+No Convex schema, mutation, or ElevenLabs dashboard changes.
+
+### Remaining limitations
+
+- **B is a mitigation, not a guaranteed fix**: `@elevenlabs/react` 1.21.0's `endSession()` exposes no
+  promise for its teardown, so 250ms is a judgment call, not a proven-sufficient bound. A future SDK
+  version that exposes an awaitable teardown would let this be fixed properly instead of with a grace
+  delay.
+- **A's underlying limitation (documented in Phase 1) is unchanged**: Interrupt is still client-side
+  silencing, not a true server-side cancel (1.21.0 has no API for that) - the interrupted turn's
+  transcript can still appear in the chat log even though its audio was muted. This fix only guarantees
+  the *silencing itself* is always undone within 8s; it doesn't make the cancellation itself more
+  "real."
+- Genuine network-level packet loss/jitter on the learner's own connection is outside any application or
+  SDK-level fix (see "Audio pipeline components inspected" above) - if voice breaking is still reported
+  after this fix, the next thing to check live (not possible from this repo) is the browser's
+  `chrome://webrtc-internals` during a real session, and whether it correlates with A or B above vs.
+  genuine packet loss.
+- Not tested by me (per "Don't test yourself"). First things to verify on resume: trigger Interrupt and
+  then stay silent - confirm Nova's audio is audible again within 8 seconds even if the UI never visibly
+  shows "Listening to you" in between; click Reconnect mid-session and confirm no overlapping/duplicate
+  audio is heard; confirm the live Tutor screen no longer visibly flickers/re-renders on every single
+  transcript line (React DevTools' "Highlight updates" on `TutorCall` while connected is the quickest way
+  to see the before/after of fix C).
+
+---
+
+## UNIQUE SESSION PER TOPIC + DUPLICATE CLEANUP (2026-11-20) - CODE COMPLETE, NOT TESTED
+
+### Brief
+
+Builds directly on "Study Planner Topic Sync" just below. That milestone made every Study Planner
+topic show up on the Study Room dashboard; this one makes sure each topic only ever has **one**
+canonical Study Room, that repeated clicks or concurrent requests can never create a second one, that
+repeating a finished lesson never destroys the learner's previous transcript/summary, and that any
+duplicates already sitting in the database from before this fix can be found and safely merged.
+
+### Root cause found (section 1's "identify why...")
+
+Two independent issues, both already present before this milestone:
+
+1. **`CreateStudyRoom`'s old dedup guard was time-windowed (30 seconds), not identity-based.** It
+   matched on `title + topic + studyTaskId` created in the last 30 seconds - a genuine, permanent
+   duplicate could still be created any time after that window, most concretely when Study Planner's
+   Task Details page offers "Start Learning in AI Study Room" again because its own `existingStudyRoom`
+   lookup (`app/(routes)/study-planner/tasks/[taskId]/page.tsx`) explicitly excludes archived rooms -
+   so a topic whose only room had been archived looked "never started" and a second room got created
+   for the exact same task.
+2. **A second, parallel, *destructive* "repeat" mechanism already existed alongside
+   `StartStudyRoomSession`.** `RepeatStudyRoomSession` (added in an earlier, unrelated session before
+   either of these two milestones) reactivated one specific finished session row in place by **deleting**
+   its messages, whiteboard, code files, notes and tool-action log and resetting it to `in_progress` -
+   silently destroying that attempt's history. It was called from three places: the M1 dashboard's
+   "Repeat Lesson" action (this session's own earlier work), `SessionRow`'s "Repeat" button on Recent
+   Sessions, and `SessionCompletion`'s "Repeat" button on the session-completion screen - which also, at
+   the same time, showed a second "Continue Learning" button that used the *other*, non-destructive
+   mechanism (`StartStudyRoomSession`) for the exact same "resume this topic" intent. That inconsistency
+   - one visible action silently destroying history, a near-identical one not - is exactly the class of
+   bug section 1 asked to find. Neither "Open Room" nor plain navigation ever called either mutation
+   (confirmed by reading `[studyRoomId]/page.tsx`, `GetStudyRoomDetails` and `GetStudyRoomSession` - all
+   read-only), so viewing a room or session never changes its status on its own (section 3's requirement
+   was already true and needed no fix).
+
+### Canonical room identity
+
+A room's canonical identity, when it has one, is **`(userId, studyTaskId)`** - or, lacking a specific
+task, **`(userId, studyPlanId)`** - using the existing `by_studyTask`/`by_studyPlan` indexes already on
+`studyRooms` (no schema change). A task's `phaseId`/plan membership don't need their own place in the
+key: a `studyTaskId` already uniquely belongs to exactly one phase and one plan, so keying on the task
+id alone is already as specific as the brief's "plan + phase + topic" asks for, without redundantly
+storing phase/plan ids that could drift out of sync with the task's own. A room with **neither**
+reference (manually created, or started from Question Bank/Resume Match/Interview Review) has no
+stable topic identity to key off and keeps the old create-every-time-but-dedup-briefly behavior
+unchanged, per the brief's own scope protection (section 7).
+
+`CreateStudyRoom` (`convex/StudyRoom.ts`) is now a true idempotent lookup-or-create against that
+identity: given a `studyTaskId`/`studyPlanId`, it looks up every existing room for it, and - if one or
+more already exist - resolves to the canonical one (see `pickCanonicalRoom` below) and returns its id
+instead of inserting, reactivating the room if it had been archived. Only when none exist at all does
+it insert a new row. This is **the same single mechanism** every entry point already funnels through
+(Study Planner's "Start Learning" link, the Study Room dashboard's "Start Learning" card, and the
+Create Study Room form all call this one mutation) - no second creation path was introduced.
+
+**Race safety** is Convex's own transactional (OCC) commit model, not a manually-built lock: two
+concurrent `CreateStudyRoom` calls for the same task both read the same `by_studyTask` index range
+inside their own mutation transaction; if one of them commits an insert into that range first, the
+other transaction's read set is now stale and Convex automatically retries it from scratch - on retry
+it finds the just-inserted room and reuses it. This is the "database-level/transactional" guarantee
+the brief asked for, native to how every Convex mutation already runs; nothing extra needed building.
+
+**`pickCanonicalRoom`** (shared by `CreateStudyRoom`, `getLatestStudyRoomForTasks` - used by Study
+Planner's `GetStudyRoomTopics` - and the two cleanup functions below, so every part of the app agrees
+on the same "which room is the real one" answer) picks the room with the most session history first
+(the brief's "prefer the record containing the most useful valid learning history"), then the oldest
+one as a deterministic tiebreaker.
+
+### Session lifecycle behaviour
+
+One single mechanism now covers every "resume this topic" action everywhere in Study Room -
+`StartStudyRoomSession`: if the canonical room has a live (`in_progress`) session, it's resumed as-is
+(transcript/workspace restored, nothing reset); otherwise a **brand-new** session row is inserted under
+the *same* canonical room - the previous session(s), whatever their status, are never touched, moved,
+or wiped. "Not Started" (`StudyRoomDashboardItem` with no `studyRoomId`) is the only state that calls
+`CreateStudyRoom` at all. "Completed" shows the label "Repeat Lesson" instead of "Continue Learning"
+(`RoomCard.tsx`'s `getAction`), but both labels dispatch to the exact same `StartStudyRoomSession` call
+- there is no behavioral difference anymore, only a clearer label matching what's about to happen.
+`RepeatStudyRoomSession` is **removed** (not merely left unused) from `convex/StudyRoom.ts`, since
+keeping a destructive mutation nothing calls around would just invite the same bug again later - its
+three call sites were updated instead:
+- `app/(routes)/study-room/RoomCard.tsx` + `page.tsx` (this session's own earlier M1 work) - already
+  only ever called `StartStudyRoomSession` for "continue"; the now-dead "repeat" special case was
+  removed from `handleAction`.
+- `app/(routes)/study-room/SessionRow.tsx` - "Repeat" now calls `StartStudyRoomSession` with that row's
+  `studyRoomId` instead of `RepeatStudyRoomSession` with that row's own `sessionId`.
+- `app/(routes)/study-room/session/[sessionId]/SessionCompletion.tsx` - same swap, and the
+  simultaneous, redundant "Repeat" + "Continue Learning" button pair (both doing slightly different
+  things before) is now exactly one primary action per status: "Repeat" for a completed session,
+  "Continue Learning" only for an abandoned one (nothing to repeat there - it starts the next attempt).
+
+### Duplicate cleanup strategy
+
+Two new, user-scoped Convex functions in `convex/StudyRoom.ts`, neither invoked automatically by
+anything (see "How to run this" below):
+
+- **`FindDuplicateStudyRooms(userId)`** (query, read-only) - groups the user's rooms by `studyTaskId`
+  and returns every group with more than one room, each room annotated with its session count and
+  which one `pickCanonicalRoom` would keep, so the report can be reviewed before changing anything.
+- **`CleanupDuplicateStudyRooms(userId)`** (mutation) - for every such group, re-parents every
+  duplicate's sessions onto the canonical room by patching each session's own `studyRoomId` field
+  (everything scoped to a session in `convex/StudyRoomWorkspace.ts`'s tables - Whiteboard, Code Editor,
+  Notes, saved layout, tool-action log - keys off `studyRoomSessionId`, not the room, so it moves
+  automatically with no extra writes). **Nothing is deleted.** Each merged-away duplicate is kept,
+  re-tagged `status: "archived"` and title-prefixed `[Merged into "<canonical title>"] `, so the merge
+  stays visible and fully reversible (per "do not perform irreversible deletion of learning history") -
+  it is never picked as a session's room again (old sessions already moved off it) and the Study Room
+  dashboard's `buildDashboardItems` (`app/(routes)/study-room/types.ts`) explicitly excludes any room
+  with that title tag from the merged-topic/standalone card list, so a retired duplicate can't be
+  clicked back into life as if it were still a separate room. Returns a migration report:
+  `{ studyTaskId, canonicalStudyRoomId, mergedStudyRoomIds, sessionsReassigned, recordsRemoved: 0 }`
+  per duplicate group (`recordsRemoved` is always `0` - nothing is ever deleted by this).
+
+**How to run this** (not done automatically, and not run by me per "don't test yourself"): from a
+Convex deployment with these functions deployed, `npx convex run StudyRoom:findDuplicateStudyRooms
+'{"userId":"<id>"}'` to review first, then `npx convex run StudyRoom:cleanupDuplicateStudyRooms
+'{"userId":"<id>"}'` per affected user once reviewed. This only covers rooms with a `studyTaskId` (the
+case this milestone's canonical identity covers) - a duplicate with only a shared `studyPlanId` and no
+specific task, or two independent rooms that merely share a title, is intentionally **not** touched
+(the brief explicitly says not to delete/merge based on title alone).
+
+### Dashboard actions (section 6)
+
+`RoomCard.tsx`'s `getAction` now derives the single primary action purely from `studyRoomStatus`
+(`not_started` -> Start Learning, `in_progress`/`abandoned` -> Continue Learning, `completed` -> Repeat
+Lesson) for **every** card, not just Study-Planner-linked ones - previously a standalone room (no
+linked task) always showed "Continue Learning" even when its last session had actually completed, since
+the old "Repeat" path needed a `latestSessionId` that standalone rooms never carried. That constraint no
+longer exists now that "Repeat" and "Continue" are the same call, so standalone rooms get the correct
+label too. "Open Room" is unchanged - a plain navigation link, never a mutation call, so it still never
+creates or changes a session (confirmed - see "Root cause found" above). `GetRecentSessions` itself
+needed no change: it was never the source of the "duplicate independent rooms for the same topic"
+symptom - that was purely a consequence of duplicate *rooms* existing, which this milestone prevents
+going forward and can retroactively clean up with the functions above.
+
+### Files modified
+
+- `convex/StudyRoom.ts` - `CreateStudyRoom` rewritten to the idempotent canonical lookup-or-create
+  described above (old 30-second-window dedup kept, but only as the fallback for rooms with neither
+  `studyTaskId` nor `studyPlanId`); added `pickCanonicalRoom`, `FindDuplicateStudyRooms`,
+  `CleanupDuplicateStudyRooms`; `getLatestStudyRoomForTasks` (M1's helper) now resolves the same way via
+  `pickCanonicalRoom` when more than one room exists for a task, instead of its own separate
+  "most-recently-accessed" rule, so the dashboard and `CreateStudyRoom` never disagree about which room
+  is canonical; removed `RepeatStudyRoomSession`.
+- `app/(routes)/study-room/RoomCard.tsx` - `getAction` simplified (no longer needs `latestSessionId`).
+- `app/(routes)/study-room/page.tsx` - `handleAction`'s dead "repeat" branch removed; no longer imports
+  `RepeatStudyRoomSession`.
+- `app/(routes)/study-room/SessionRow.tsx` - "Repeat" now calls `StartStudyRoomSession`.
+- `app/(routes)/study-room/session/[sessionId]/SessionCompletion.tsx` - "Repeat" now calls
+  `StartStudyRoomSession`; "Continue Learning" only renders for an abandoned session, so a completed one
+  shows exactly one primary action ("Repeat") instead of two.
+- `app/(routes)/study-room/types.ts` - `buildDashboardItems` excludes merged-away duplicate shells
+  (by the `[Merged into "` title tag) from the rendered list.
+
+### Migration details
+
+No schema change. The merge is additive/non-destructive by construction (patches `studyRoomSessionId`
+ownership and the duplicate room's own `status`/`title` only - see "Duplicate cleanup strategy" above
+for the exact report shape and how to invoke it). Nothing is deleted anywhere in this milestone.
+
+### Remaining limitations
+
+- `CleanupDuplicateStudyRooms` must be invoked explicitly per user (not run by me, and not swept across
+  all users automatically) - see "How to run this" above.
+- `GetDashboardStats`' `totalRooms` count is unchanged and will include a merged-away duplicate shell as
+  a "room" after cleanup runs (it's still a real row, just archived and emptied) - a minor cosmetic
+  over-count, not a functional issue, left as-is rather than touching a stats query this milestone
+  didn't otherwise need to change.
+- Duplicates that share only a `studyPlanId` (no specific task) or share nothing but a title are
+  intentionally not detected/merged by `FindDuplicateStudyRooms`/`CleanupDuplicateStudyRooms`, per the
+  brief's explicit "do not delete/merge based on matching titles alone."
+- Not tested by me (per "Don't test yourself"). First thing to verify on resume: click "Start Learning"
+  for a topic, then immediately click it again (or open the same link in two tabs) and confirm only one
+  room/session is ever created; complete a lesson and click "Repeat Lesson" and confirm the prior
+  session's transcript/summary are still intact afterward (check the room detail page's Sessions list -
+  both the old and new session should be listed, not one overwriting the other).
+
+---
+
+## STUDY PLANNER TOPIC SYNC (2026-11-20) - CODE COMPLETE, NOT TESTED
+
+### Brief
+
+The Study Room dashboard's "My Study Rooms" section only ever showed rooms that already
+existed - a Study Planner topic the learner hadn't started yet in AI Study Room was invisible
+there, even though it already existed as a `studyPlanTasks` row. The brief (reference screenshot
+`issue/issue01.png`) asked for Study Planner to become the source of truth for "My Study Rooms":
+every topic from every plan should show up (Not Started / In Progress / Completed), and starting a
+topic from either Study Planner or the Study Room dashboard must resolve to the same room - never a
+duplicate.
+
+### Existing architecture found (read before changing anything)
+
+- **Study Planner** (`convex/StudyPlanner.ts`, `convex/schema.ts`): `studyPlans` -> `studyPlanPhases`
+  -> `studyPlanTasks` (a task's `phaseId` is optional - a task can be phase-less). A task's own
+  `status` (pending/in_progress/completed/skipped) is Study Planner's own progress tracking, separate
+  from anything in Study Room.
+- **Study Room** (`convex/StudyRoom.ts`): `studyRooms` -> `studyRoomSessions`. A room optionally
+  carries `studyPlanId`/`studyTaskId` (set when it was started from a Study Planner task - see
+  `CreateStudyRoom`'s `validateOwnedRefs`), which is exactly the stable, ownership-checked reference
+  the brief asked for instead of matching on topic title (title collisions across different plans are
+  explicitly possible and already called out in existing comments). `by_studyTask` is an existing
+  schema index on `studyRooms` - no index needed to be added.
+- **Existing one-directional read**: Study Planner's Task Details page
+  (`app/(routes)/study-planner/tasks/[taskId]/page.tsx`) already calls
+  `api.StudyRoom.GetStudyRoomsForStudyTask` (a Study-Room-owned query) to show "this task's Study Room
+  session(s)," and already builds a `/study-room/create?source=studyPlanner&studyTaskId=...&...` link
+  whose prefill logic (`app/(routes)/study-room/create/page.tsx`) I had to match field-for-field so a
+  topic started from either entry point produces an identical room.
+- **Existing "same topic -> same room" guard**: `CreateStudyRoom` already dedupes on
+  `title + topic + studyTaskId` within a 30-second window. This module's existing comments explicitly
+  document that a room is never required to carry `studyPlanId`/`studyTaskId` and that losing that
+  link is handled as "unavailable," never an error - so treating "no room found for this task" as
+  `not_started` (rather than as a bug) matches the module's own conventions.
+- **Existing `RepeatStudyRoomSession` mutation** (added in a separate, prior session - see the
+  "AI Study Room Tool Usage Investigation" work above this file; unrelated to this milestone) already
+  reactivates a specific finished session row rather than starting a new one. This is exactly the
+  "Repeat Lesson" action the brief asked for, so no new mutation was needed for it.
+
+### Topic synchronization approach
+
+1. **New read-only Convex helper**, `getLatestStudyRoomForTasks` (`convex/StudyRoom.ts`, placed next
+   to the existing `findStudyRoomsForStudyPlan`): given a user and a list of task ids, returns - per
+   task - the most relevant linked room (if any) plus that room's most recent session's id/status.
+   This is the only place Study Room's own tables (`studyRooms`, `studyRoomSessions`) are queried for
+   this feature; StudyPlanner.ts never queries them directly, matching the existing
+   StudyPlanner-depends-on-StudyRoom direction already established by its import of
+   `deleteStudyRoomCascade`/`findStudyRoomsForStudyPlan`.
+2. **New query**, `GetStudyRoomTopics` (`convex/StudyPlanner.ts`): for the caller's own non-archived
+   plans, returns one "topic" per task (every phase's tasks, plus phase-less tasks), each carrying its
+   plan/phase context, a derived `studyRoomStatus` (`not_started` / `in_progress` / `completed` -
+   `abandoned` sessions count as `in_progress` so "Continue Learning" is still the right action), and -
+   when a room already exists - that room's id, latest session id, session count and last-accessed
+   time. A task with no room at all still comes back (`studyRoomStatus: "not_started"`), which is the
+   brief's core requirement.
+3. **Dashboard merge** (`app/(routes)/study-room/types.ts`'s new `buildDashboardItems`): combines
+   `GetStudyRoomTopics` with the existing `GetUserStudyRooms` into one list - a topic that already has
+   a room is shown once (topic title/description stay authoritative, per "Study Planner is the source
+   of truth"), and any room with no matching topic (manually created, or started from Question
+   Bank/Resume Match/Interview Review - all still fully supported) is still shown standalone, exactly
+   as before. This is what keeps "don't require a session to exist before showing a topic" true while
+   also not dropping any previously-visible room.
+4. **One action per card, reusing three existing mutations with zero new ones**: "Start Learning" (no
+   room yet) calls the existing `CreateStudyRoom` + `StartStudyRoomSession` directly (the same two
+   calls `create/page.tsx`'s submit handler already makes, just invoked straight from the dashboard
+   card instead of via the form) and is only ever offered when `GetStudyRoomTopics` reports no linked
+   room - so a second click, or entering from Study Planner's own "Start Learning" link afterward,
+   reuses the same room via the existing dedup guard rather than creating a duplicate. "Continue
+   Learning" (room exists, not finished) calls the existing `StartStudyRoomSession`. "Repeat Lesson"
+   (room exists, finished) calls the existing `RepeatStudyRoomSession` on that room's latest session.
+
+### Files modified
+
+- `convex/StudyRoom.ts` - added `getLatestStudyRoomForTasks` (new exported helper; no changes to any
+  existing export's behavior).
+- `convex/StudyPlanner.ts` - added `GetStudyRoomTopics` (new query) and extended the existing import
+  of `./StudyRoom` to include the helper above. No existing export changed.
+- `app/(routes)/study-room/types.ts` - added `TopicStatus`, `TOPIC_STATUS_META`, `StudyRoomTopic`,
+  `StudyRoomDashboardItem` and `buildDashboardItems`. No existing export changed.
+- `app/(routes)/study-room/RoomCard.tsx` - rewritten to render the unified `StudyRoomDashboardItem`
+  (status badge + the one contextual action - Start/Continue/Repeat) instead of only a
+  `StudyRoomSummary` with a single hardcoded "Continue Learning" action. Still the only place that
+  renders a card in "My Study Rooms," and still only imported by `page.tsx`.
+- `app/(routes)/study-room/page.tsx` - added the `GetStudyRoomTopics` query and the `CreateStudyRoom`/
+  `RepeatStudyRoomSession` mutations; replaced the room-only list/filter/"Continue Learning" logic with
+  the merged `items` list and a single `handleAction` dispatcher. The stat cards, "Recently studied"
+  chips, the All/Active/Archived filter tabs (now filtering the merged list instead of only rooms, same
+  values/labels/counts mechanism as before) and the "Recent Sessions" section were not changed beyond
+  what the data-source rename required.
+
+### Database changes
+
+None. No schema migration - this only adds a new way of reading `studyPlans`/`studyPlanPhases`/
+`studyPlanTasks`/`studyRooms`/`studyRoomSessions`, all of which already existed with the indexes this
+needed (`by_user`, `by_studyPlan`, `by_studyPlan_order`, `by_studyTask`, `by_studyRoom`).
+
+### Explicitly not done (per the brief's own scope protection / mandatory instructions)
+
+- No duplicate-session cleanup, no audio changes (out of scope per the brief).
+- No change to Study Planner generation logic, AI Tutor behaviour, Mock Interview, authentication or
+  billing.
+- Not tested by me (per "Don't test yourself" / existing project convention - see every other
+  milestone in this file).
+
+### Remaining implementation milestones / resume point
+
+- **Live verification** (first thing to do on resume): open `/study-room` as a user with at least one
+  Study Planner task that has never had a session, confirm it shows "Not Started" with a working
+  "Start Learning" button, that clicking it lands in a live session, and that going back to that same
+  task in Study Planner's Task Details screen now shows "Continue in AI Study Room" pointing at the
+  same room (not a second one).
+- Verify the Active/Archived filter tabs still correctly split a mix of topics-without-rooms (always
+  "active"), topics-with-rooms, and pre-existing standalone rooms (including an archived one).
+- Not attempted: any visual/responsive pass beyond reusing the existing card layout and Astra theme
+  tokens already used by `RoomCard.tsx`/`SessionRow.tsx` - worth a manual look at phone width since no
+  browser was opened during this work.
 
 ---
 

@@ -13,6 +13,7 @@ import {
   VolumeX,
   MessageCircle,
   PhoneOff,
+  Pause,
   Send,
   X,
   Square,
@@ -49,7 +50,22 @@ const CONNECT_TIMEOUT_MS = 25_000
 // is over: the learner takes the floor (voice/text), the server reports an
 // interruption, or she has been quiet ("listening") for this long.
 const INTERRUPT_SETTLE_MS = 1_200
+// M3 - hard ceiling on how long Interrupt may silence Nova's audio. The
+// settle timer above only arms while `conversation.mode === "listening"`
+// (see the effect below); mode is reported via LiveKit's active-speaker
+// detection on the *published* agent track, which keeps tracking the
+// server's own turn-taking regardless of our local setVolume(0) - it can
+// swing straight from one "speaking" turn to the next without ever passing
+// through "listening" (e.g. the agent starts its next reply before the
+// interrupted one's audio has fully drained), in which case the settle
+// timer never arms and nothing else would ever call finishInterrupt(). This
+// fallback guarantees Nova's audio always comes back within a bounded time
+// even in that case, instead of staying silenced for the rest of the session.
+const INTERRUPT_HARD_TIMEOUT_MS = 8_000
 const NOTICE_MS = 6_000
+// M3 - see handleReconnect: a short grace period between ending the old
+// conversation and starting the new one.
+const RECONNECT_TEARDOWN_GRACE_MS = 250
 
 // Phase 1 (C1/C3) - the Tutor's real connection lifecycle, tracked here
 // instead of reading the SDK's `status`, which flips to "error" on *any* SDK
@@ -79,6 +95,10 @@ function describeDisconnect(details: DisconnectDetails): string {
     return why ? `Nova ended the conversation (${why}).` : "Nova ended the conversation."
   }
   return "The conversation was closed."
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // Phase 1 (C9) - confirms microphone permission without leaving a stream
@@ -120,6 +140,7 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
   const [chatOpen, setChatOpen] = useState(false)
   const [draft, setDraft] = useState("")
   const [isEnding, setIsEnding] = useState(false)
+  const [isPausing, setIsPausing] = useState(false)
   const [audioMuted, setAudioMuted] = useState(false)
   const [hasOpenTools, setHasOpenTools] = useState(false)
   const [linkState, setLinkStateValue] = useState<LinkState>("idle")
@@ -143,6 +164,9 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
   const busyRef = useRef(false)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // M3 - unconditional fallback for an Interrupt whose mode-gated settle
+  // timer never arms (see INTERRUPT_HARD_TIMEOUT_MS above).
+  const interruptHardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function setLinkState(next: LinkState) {
     linkStateRef.current = next
@@ -174,6 +198,7 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
       intentionalEndRef.current = true
       if (watchdogRef.current) clearTimeout(watchdogRef.current)
       if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      if (interruptHardTimeoutRef.current) clearTimeout(interruptHardTimeoutRef.current)
     }
   }, [])
 
@@ -213,6 +238,11 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
   // sure the mic is live and signal learner activity (sendUserActivity) so
   // the learner can speak or type at once; audio is restored as soon as her
   // interrupted turn is over (see finishInterrupt's callers).
+  function clearInterruptHardTimeout() {
+    if (interruptHardTimeoutRef.current) clearTimeout(interruptHardTimeoutRef.current)
+    interruptHardTimeoutRef.current = null
+  }
+
   function handleInterrupt() {
     if (interruptingRef.current || linkStateRef.current !== "connected") return
     interruptingRef.current = true
@@ -220,11 +250,16 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
     conversation.setVolume({ volume: 0 })
     if (conversation.isMuted) conversation.setMuted(false)
     conversation.sendUserActivity()
+    // M3 - see INTERRUPT_HARD_TIMEOUT_MS: guarantees audio comes back even
+    // if mode never settles on "listening" and the learner never speaks.
+    clearInterruptHardTimeout()
+    interruptHardTimeoutRef.current = setTimeout(finishInterrupt, INTERRUPT_HARD_TIMEOUT_MS)
   }
 
   // Restores Nova's audio (respecting the learner's own "mute Tutor audio"
   // choice) for her next turn.
   function finishInterrupt() {
+    clearInterruptHardTimeout()
     if (!interruptingRef.current) return
     interruptingRef.current = false
     setInterrupting(false)
@@ -234,6 +269,7 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
   // The conversation is gone - nothing to restore on it (a new conversation
   // starts at full volume; the mute preference is re-applied on connect).
   function resetInterrupt() {
+    clearInterruptHardTimeout()
     interruptingRef.current = false
     setInterrupting(false)
   }
@@ -421,6 +457,17 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
     clearWatchdog()
     conversation.endSession()
     try {
+      // M3 - the SDK's endSession() doesn't return a promise for its async
+      // teardown (room.disconnect() + removing the old <audio> element from
+      // the DOM), so that teardown can't be awaited directly here. This
+      // grace period reduces the window where the old conversation's
+      // teardown and the new one's startSession() below could overlap (e.g.
+      // two audio elements briefly attached at once) - it's a best-effort
+      // mitigation, not a guarantee, since the SDK exposes nothing to wait
+      // on. ensureMicrophonePermission()/requestFreshConnection() usually
+      // add further real delay of their own; this guarantees a minimum gap
+      // even when permission is already granted and the token request is fast.
+      await sleep(RECONNECT_TEARDOWN_GRACE_MS)
       await ensureMicrophonePermission()
       const fresh = await requestFreshConnection()
       if (linkStateRef.current !== "reconnecting") return
@@ -461,6 +508,22 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
     } finally {
       setIsEnding(false)
     }
+  }
+
+  // Pause - leaves the session row "in_progress" (unlike End Session), so
+  // the lesson simply stops here rather than completing. Leaving it that way
+  // is already how a resumable pause works elsewhere in this session (see
+  // convex/StudyRoom.ts:StartStudyRoomSession) - this just disconnects the
+  // live Tutor call and returns to the session page, where re-joining
+  // resumes the same, still-"in_progress" lesson.
+  function handlePause() {
+    if (isPausing || isEnding) return
+    setIsPausing(true)
+    intentionalEndRef.current = true
+    clearWatchdog()
+    resetInterrupt()
+    conversation.endSession()
+    router.push(`/study-room/session/${sessionId}`)
   }
 
   const isConnected = linkState === "connected"
@@ -804,6 +867,16 @@ function TutorCall({ sessionId, room, connection, clientId, requestFreshConnecti
               title="Toggle Tutor audio output"
             >
               {audioMuted ? <VolumeX className="size-4.5" /> : <Volume2 className="size-4.5" />}
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePause}
+              disabled={isPausing || isEnding}
+              className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2.5 text-sm font-semibold text-primary shadow-xs transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Pause className="size-4" />
+              <span className="hidden sm:inline">{isPausing ? "Pausing..." : "Pause"}</span>
             </button>
 
             <button

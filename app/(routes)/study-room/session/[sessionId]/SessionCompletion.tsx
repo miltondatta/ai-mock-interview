@@ -16,6 +16,7 @@ import {
   NotebookPen,
   Sparkles,
   Loader2,
+  Repeat,
 } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -50,25 +51,33 @@ function Section({
   open,
   onToggle,
   children,
+  headerAction,
 }: {
   title: string
   icon: React.ElementType
   open: boolean
   onToggle: () => void
   children: React.ReactNode
+  headerAction?: React.ReactNode
 }) {
   return (
     <div className="rounded-2xl border border-border bg-card shadow-sm">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
-      >
-        <span className="flex items-center gap-2 text-sm font-bold text-foreground">
+      <div className="flex items-center justify-between gap-3 px-5 py-4">
+        <button type="button" onClick={onToggle} className="flex flex-1 items-center gap-2 text-left text-sm font-bold text-foreground">
           <Icon className="size-4 text-primary" /> {title}
-        </span>
-        {open ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
-      </button>
+        </button>
+        <div className="flex shrink-0 items-center gap-2.5">
+          {headerAction}
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={open ? "Collapse section" : "Expand section"}
+            className="flex size-5 items-center justify-center text-muted-foreground hover:text-foreground"
+          >
+            {open ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+          </button>
+        </div>
+      </div>
       {open && <div className="border-t border-border px-5 py-4">{children}</div>}
     </div>
   )
@@ -102,11 +111,13 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
   const [insufficient, setInsufficient] = useState(false)
   const [genError, setGenError] = useState<string | null>(null)
   const [regenerating, setRegenerating] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
-  const [assessmentOpen, setAssessmentOpen] = useState(true)
-  const [nextStepsOpen, setNextStepsOpen] = useState(true)
+  const [assessmentOpen, setAssessmentOpen] = useState(false)
+  const [nextStepsOpen, setNextStepsOpen] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
+  const [isRepeating, setIsRepeating] = useState(false)
   const reviewRef = useRef<HTMLDivElement>(null)
   const triggerKeyRef = useRef<string | null>(null)
 
@@ -162,6 +173,22 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
     }
   }
 
+  // M2 - starts a brand-new attempt under this room (StartStudyRoomSession,
+  // the same single mechanism "Continue Learning" above uses) instead of
+  // reactivating-and-wiping this exact finished session in place, so this
+  // attempt's own transcript/summary/completion timestamp is preserved.
+  async function handleRepeatLesson() {
+    if (!userId || isRepeating) return
+    setIsRepeating(true)
+    try {
+      const result = await startSession({ userId, studyRoomId: room._id as Id<"studyRooms"> })
+      router.push(`/study-room/session/${result.sessionId}`)
+    } catch (e) {
+      console.error(e)
+      setIsRepeating(false)
+    }
+  }
+
   function handleReviewSession() {
     setTranscriptOpen(true)
     setNotesOpen(true)
@@ -179,12 +206,13 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
   const isAbandoned = session.status === "abandoned"
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10 md:px-10 md:py-14">
-      <div
-        className={`flex flex-col items-center gap-4 rounded-2xl border p-8 text-center shadow-sm ${
-          isAbandoned ? "border-warning/30 bg-warning/5" : "border-border bg-card"
-        }`}
-      >
+    <div className="mx-auto max-w-6xl px-6 py-10 md:px-10 md:py-14">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
+        <div
+          className={`flex flex-col items-center gap-4 rounded-2xl border p-8 text-center shadow-sm lg:sticky lg:top-6 ${
+            isAbandoned ? "border-warning/30 bg-warning/5" : "border-border bg-card"
+          }`}
+        >
         <div
           className={`flex size-14 items-center justify-center rounded-full ${
             isAbandoned ? "bg-warning/15 text-warning-foreground" : "bg-success/15 text-success"
@@ -230,6 +258,16 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
         </div>
 
         <div className="mt-2 flex flex-wrap items-center justify-center gap-2.5">
+          {!isAbandoned && (
+            <button
+              type="button"
+              onClick={handleRepeatLesson}
+              disabled={isRepeating}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-60"
+            >
+              <Repeat className="size-4" /> {isRepeating ? "Restarting..." : "Repeat"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleReviewSession}
@@ -237,14 +275,20 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
           >
             Review the Session
           </button>
-          <button
-            type="button"
-            onClick={handleContinueLearning}
-            disabled={isStarting}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-60"
-          >
-            {isStarting ? "Starting..." : "Continue Learning"}
-          </button>
+          {/* M2 - exactly one primary "resume this topic" action per status:
+              a completed session already shows "Repeat" above; "Continue
+              Learning" only applies to an abandoned one (nothing to repeat,
+              nothing live to resume - this starts the next attempt). */}
+          {isAbandoned && (
+            <button
+              type="button"
+              onClick={handleContinueLearning}
+              disabled={isStarting}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-60"
+            >
+              {isStarting ? "Starting..." : "Continue Learning"}
+            </button>
+          )}
           <Link
             href="/study-room"
             className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold text-foreground hover:bg-muted"
@@ -260,25 +304,26 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
         </div>
       </div>
 
-      {/* --- Lesson Summary ---------------------------------------------- */}
-      <div className="mt-8" ref={reviewRef}>
-        <div className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-bold text-foreground">
-            <Sparkles className="size-4.5 text-primary" /> Learning Summary
-          </h2>
-          {summaryData?.status === "ready" && (
-            <button
-              type="button"
-              onClick={handleRegenerate}
-              disabled={regenerating}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline disabled:opacity-60"
-            >
-              <RefreshCw className={`size-3.5 ${regenerating ? "animate-spin" : ""}`} /> Regenerate
-            </button>
-          )}
-        </div>
-
-        <div className="mt-3 rounded-2xl border border-border bg-card p-5 shadow-sm">
+      {/* --- Learning Summary and subsequent sections, collapsed, right side --- */}
+      <div className="flex flex-col gap-3" ref={reviewRef}>
+        <Section
+          title="Learning Summary"
+          icon={Sparkles}
+          open={summaryOpen}
+          onToggle={() => setSummaryOpen((v) => !v)}
+          headerAction={
+            summaryData?.status === "ready" ? (
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={regenerating}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline disabled:opacity-60"
+              >
+                <RefreshCw className={`size-3.5 ${regenerating ? "animate-spin" : ""}`} /> Regenerate
+              </button>
+            ) : undefined
+          }
+        >
           {insufficient && (
             <p className="text-sm text-muted-foreground">
               There isn't enough conversation in this session to generate a meaningful summary.
@@ -384,11 +429,10 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
               )}
             </div>
           )}
-        </div>
-      </div>
+        </Section>
 
-      {summary && (
-        <div className="mt-4 flex flex-col gap-3">
+        {summary && (
+          <>
           <Section title="Tutor's Assessment (AI-generated, not a grade)" icon={Sparkles} open={assessmentOpen} onToggle={() => setAssessmentOpen((v) => !v)}>
             <div className="flex flex-col gap-4">
               <div>
@@ -428,11 +472,9 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
               </div>
             </div>
           </Section>
-        </div>
-      )}
+          </>
+        )}
 
-      {/* --- Lesson Notes & Transcript access ----------------------------- */}
-      <div className="mt-4 flex flex-col gap-3">
         {notesSaved && (
           <Section title="Lesson Notes" icon={NotebookPen} open={notesOpen} onToggle={() => setNotesOpen((v) => !v)}>
             <div
@@ -461,6 +503,7 @@ function SessionCompletion({ sessionId, session, room }: SessionCompletionProps)
             <p className="text-sm text-muted-foreground">No conversation was recorded for this session.</p>
           )}
         </Section>
+      </div>
       </div>
     </div>
   )

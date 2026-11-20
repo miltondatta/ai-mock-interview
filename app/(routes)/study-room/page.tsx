@@ -1,17 +1,25 @@
 "use client"
 
-import React, { useContext, useMemo, useState } from "react"
+import React, { useContext, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery } from "convex/react"
-import { Plus, LayoutGrid, Radio, CheckCircle2, TrendingUp, Bot, Clock, History } from "lucide-react"
+import { Plus, LayoutGrid, Radio, CheckCircle2, TrendingUp, Bot, Clock, History, Search } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { UserDetailContext } from "@/context/UserDetailContext"
-import RoomCard from "./RoomCard"
+import TopicRow, { type RoomCardAction } from "./TopicRow"
+import PlanSection from "./PlanSection"
 import SessionRow from "./SessionRow"
-import type { DashboardStats, RecentSessionSummary, RoomStatus, StudyRoomSummary } from "./types"
-import { formatDuration } from "./types"
+import type {
+  DashboardStats,
+  RecentSessionSummary,
+  RoomStatus,
+  StudyRoomDashboardItem,
+  StudyRoomSummary,
+  StudyRoomTopic,
+} from "./types"
+import { buildDashboardItems, formatDuration, groupDashboardItems } from "./types"
 
 type FilterValue = "all" | RoomStatus
 
@@ -104,13 +112,23 @@ function StudyRoomDashboardPage() {
   const { userDetail } = useContext(UserDetailContext)
   const userId: Id<"UserTable"> | undefined = userDetail?._id
   const [filter, setFilter] = useState<FilterValue>("all")
-  const [startingRoomId, setStartingRoomId] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+  const [actionKey, setActionKey] = useState<string | null>(null)
   const [loadError, setLoadError] = useState(false)
 
   const rooms = useQuery(
     api.StudyRoom.GetUserStudyRooms,
     userId ? { userId } : "skip"
   ) as StudyRoomSummary[] | undefined
+
+  // Study Planner is the source of truth for "My Study Rooms" - every topic
+  // (task) from every non-archived plan shows up here whether or not a
+  // Study Room session has ever been started for it (see
+  // convex/StudyPlanner.ts's GetStudyRoomTopics).
+  const topics = useQuery(
+    api.StudyPlanner.GetStudyRoomTopics,
+    userId ? { userId } : "skip"
+  ) as StudyRoomTopic[] | undefined
 
   const stats = useQuery(
     api.StudyRoom.GetDashboardStats,
@@ -122,36 +140,90 @@ function StudyRoomDashboardPage() {
     userId ? { userId, limit: 8 } : "skip"
   ) as RecentSessionSummary[] | undefined
 
+  const createStudyRoom = useMutation(api.StudyRoom.CreateStudyRoom)
   const startSession = useMutation(api.StudyRoom.StartStudyRoomSession)
+  const reconcileStaleSessions = useMutation(api.StudyRoom.ReconcileStaleInProgressSessions)
+
+  // A session can be left permanently "In Progress" - looking like a
+  // duplicate of whatever topic/session the learner is actually using now -
+  // when its tab closed without a clean disconnect (before Phase 1's
+  // lease/beforeunload tracking existed, or a genuine crash). Running this
+  // once per dashboard visit self-heals that: it only ever ends a session
+  // that has no live Tutor connection right now (see
+  // ReconcileStaleInProgressSessions), never touching one actually in use,
+  // and never deletes anything - the session's own history stays intact,
+  // just marked "Abandoned" instead of stuck at "In Progress" forever.
+  useEffect(() => {
+    if (!userId) return
+    reconcileStaleSessions({ userId }).catch((e) => console.error("Failed to reconcile stale sessions:", e))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
+
+  const items = useMemo<StudyRoomDashboardItem[] | undefined>(() => {
+    if (!topics || !rooms) return undefined
+    return buildDashboardItems(topics, rooms)
+  }, [topics, rooms])
 
   const counts = useMemo(() => {
     const base: Record<FilterValue, number> = {
-      all: rooms?.length ?? 0,
+      all: items?.length ?? 0,
       active: 0,
       archived: 0,
     }
-    for (const room of rooms ?? []) base[room.status] += 1
+    for (const item of items ?? []) base[item.status] += 1
     return base
-  }, [rooms])
+  }, [items])
 
-  const visibleRooms = useMemo(() => {
-    if (!rooms) return []
-    return filter === "all" ? rooms : rooms.filter((r) => r.status === filter)
-  }, [rooms, filter])
+  const visibleItems = useMemo(() => {
+    if (!items) return []
+    const byStatus = filter === "all" ? items : items.filter((item) => item.status === filter)
+    const query = search.trim().toLowerCase()
+    return query ? byStatus.filter((item) => item.title.toLowerCase().includes(query)) : byStatus
+  }, [items, filter, search])
 
-  async function handleContinueLearning(studyRoomId: string) {
-    if (!userId || startingRoomId) return
-    setStartingRoomId(studyRoomId)
+  // M5 - groups the already-filtered/searched list into Learning Plan ->
+  // Learning Phase -> Topic (plus a standalone section for rooms with no
+  // plan/phase of their own), mirroring Study Planner's own collapsible-
+  // phase layout instead of a grid of large cards.
+  const grouped = useMemo(() => groupDashboardItems(visibleItems), [visibleItems])
+
+  // M2 - "Continue Learning" and "Repeat Lesson" are two labels for the same
+  // operation: StartStudyRoomSession on the item's (canonical) room, which
+  // resumes its live session if one exists or starts a brand-new attempt
+  // under that same room otherwise. No separate "repeat" mutation is called
+  // here on purpose - see convex/StudyRoom.ts's removed RepeatStudyRoomSession
+  // and AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md.
+  async function handleAction(item: StudyRoomDashboardItem, action: RoomCardAction) {
+    if (!userId || actionKey) return
+    setActionKey(item.key)
     try {
-      const result = await startSession({ userId, studyRoomId: studyRoomId as Id<"studyRooms"> })
-      router.push(`/study-room/session/${result.sessionId}`)
+      if (action === "start" && item.startPayload) {
+        const { studyRoomId } = await createStudyRoom({
+          userId,
+          title: item.startPayload.title,
+          topic: item.startPayload.topic,
+          objective: item.startPayload.objective,
+          difficulty: item.startPayload.difficulty,
+          additionalInstructions: item.startPayload.additionalInstructions,
+          studyPlanId: item.startPayload.studyPlanId as Id<"studyPlans">,
+          studyTaskId: item.startPayload.studyTaskId as Id<"studyPlanTasks">,
+        })
+        const { sessionId } = await startSession({ userId, studyRoomId })
+        router.push(`/study-room/session/${sessionId}`)
+        return
+      }
+      if (item.studyRoomId) {
+        const { sessionId } = await startSession({ userId, studyRoomId: item.studyRoomId as Id<"studyRooms"> })
+        router.push(`/study-room/session/${sessionId}`)
+        return
+      }
     } catch {
       setLoadError(true)
-      setStartingRoomId(null)
+      setActionKey(null)
     }
   }
 
-  const isLoading = userId !== undefined && (rooms === undefined || stats === undefined)
+  const isLoading = userId !== undefined && (items === undefined || stats === undefined)
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10 md:px-10 md:py-14">
@@ -175,7 +247,7 @@ function StudyRoomDashboardPage() {
 
       {!loadError && isLoading && <StatCardsSkeleton />}
 
-      {!loadError && rooms && stats && (
+      {!loadError && items && stats && (
         <>
           <div className="mt-8 grid grid-cols-2 gap-4 sm:gap-5 lg:grid-cols-5">
             <StatCard icon={LayoutGrid} label="Total Study Rooms" value={String(stats.totalRooms)} tone="primary" />
@@ -201,47 +273,67 @@ function StudyRoomDashboardPage() {
             </div>
           )}
 
-          {rooms.length > 0 ? (
+          {items.length > 0 ? (
             <>
               <div className="mt-10 flex items-center justify-between">
                 <h2 className="text-xl font-bold tracking-tight text-foreground">My Study Rooms</h2>
               </div>
 
-              <div className="mt-4 flex flex-wrap items-center gap-2.5">
-                {FILTERS.map((f) => {
-                  const isFilterActive = filter === f.value
-                  return (
-                    <button
-                      key={f.value}
-                      type="button"
-                      onClick={() => setFilter(f.value)}
-                      className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
-                        isFilterActive
-                          ? "border-primary/50 bg-primary/10 text-primary"
-                          : "border-transparent bg-muted text-muted-foreground hover:border-primary/30"
-                      }`}
-                    >
-                      {f.label}
-                      <span className="text-xs font-semibold opacity-80">{counts[f.value]}</span>
-                    </button>
-                  )
-                })}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {FILTERS.map((f) => {
+                    const isFilterActive = filter === f.value
+                    return (
+                      <button
+                        key={f.value}
+                        type="button"
+                        onClick={() => setFilter(f.value)}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
+                          isFilterActive
+                            ? "border-primary/50 bg-primary/10 text-primary"
+                            : "border-transparent bg-muted text-muted-foreground hover:border-primary/30"
+                        }`}
+                      >
+                        {f.label}
+                        <span className="text-xs font-semibold opacity-80">{counts[f.value]}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="relative w-full sm:w-60">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search topics..."
+                    className="w-full rounded-xl border border-border bg-card py-2 pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                </div>
               </div>
 
-              {visibleRooms.length > 0 ? (
-                <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
-                  {visibleRooms.map((room) => (
-                    <RoomCard
-                      key={room._id}
-                      room={room}
-                      starting={startingRoomId === room._id}
-                      onContinue={() => handleContinueLearning(room._id)}
-                    />
+              {visibleItems.length > 0 ? (
+                <div className="mt-6 flex flex-col gap-6">
+                  {grouped.planGroups.map((plan) => (
+                    <PlanSection key={plan.key} plan={plan} busyKey={actionKey} onAction={handleAction} />
                   ))}
+
+                  {grouped.standalone.length > 0 && (
+                    <div className="flex flex-col gap-3">
+                      {grouped.planGroups.length > 0 && (
+                        <h3 className="text-sm font-bold text-foreground">Other Study Rooms</h3>
+                      )}
+                      <div className="flex flex-col gap-2">
+                        {grouped.standalone.map((item) => (
+                          <TopicRow key={item.key} item={item} busy={actionKey === item.key} onAction={handleAction} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mt-6 rounded-2xl border border-dashed border-border py-14 text-center text-sm text-muted-foreground">
-                  No rooms in this filter yet.
+                  No rooms match this filter{search.trim() ? " or search" : ""}.
                 </div>
               )}
 

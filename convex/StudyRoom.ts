@@ -65,6 +65,13 @@ function buildRoomSummary(room: Doc<"studyRooms">, sessions: Doc<"studyRoomSessi
     hasActiveSession,
     lastAccessedAt: room.lastAccessedAt,
     createdAt: room.createdAt,
+    // M5 - lets the dashboard tell a room tied to a Study Planner task apart
+    // from a fully independent one, so a room already represented by its
+    // task's topic row (including an old duplicate room for that same task,
+    // from before CreateStudyRoom's canonical lookup-or-create existed) is
+    // never *also* shown as a separate standalone room - see
+    // app/(routes)/study-room/types.ts's buildDashboardItems.
+    studyTaskId: room.studyTaskId,
   };
 }
 
@@ -135,6 +142,36 @@ export const GetDashboardStats = query({
   },
 });
 
+// M5.1 - both GetSessionHistory and GetRecentSessions read studyRoomSessions
+// directly, independent of the "My Study Rooms" dashboard's own canonical-
+// room logic (buildDashboardItems, app/(routes)/study-room/types.ts) - a
+// session belonging to an old, non-canonical duplicate room for a Study
+// Planner task (see CreateStudyRoom's canonical lookup-or-create and
+// CleanupDuplicateStudyRooms, both earlier in this file) still surfaced
+// here even after that dashboard-side fix, since neither of these two
+// queries ever checked which room is the task's canonical one. This helper
+// resolves each session's room once and reports whether that room is a
+// duplicate to be hidden from these two views (the session row itself is
+// never touched or deleted - it's still reachable via its own room, and
+// CleanupDuplicateStudyRooms re-parenting it onto the canonical room is what
+// makes it show up here normally afterward).
+async function resolveSessionRooms(ctx: QueryCtx, userId: Id<"UserTable">, sessions: Doc<"studyRoomSessions">[]) {
+  const roomIds = [...new Set(sessions.map((s) => s.studyRoomId))];
+  const roomEntries = await Promise.all(roomIds.map(async (id) => [id, await ctx.db.get(id)] as const));
+  const roomById = new Map(roomEntries);
+
+  const taskIds = [...new Set([...roomById.values()].flatMap((r) => (r?.studyTaskId ? [r.studyTaskId] : [])))];
+  const canonicalByTask = await getLatestStudyRoomForTasks(ctx, userId, taskIds);
+
+  function isDuplicateRoom(room: Doc<"studyRooms"> | null | undefined): boolean {
+    if (!room?.studyTaskId) return false;
+    const canonical = canonicalByTask.get(room.studyTaskId);
+    return !!canonical && canonical.studyRoomId !== room._id;
+  }
+
+  return { roomById, isDuplicateRoom };
+}
+
 // M4 - full session history across every room, newest first, each enriched
 // with its room's title/topic/category so the History page never needs a
 // second round trip per row. Unlike GetRecentSessions (Dashboard's capped
@@ -149,10 +186,12 @@ export const GetSessionHistory = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
     const sorted = [...sessions].sort((a, b) => b.startedAt - a.startedAt);
+    const { roomById, isDuplicateRoom } = await resolveSessionRooms(ctx, args.userId, sorted);
 
-    return Promise.all(
-      sorted.map(async (session) => {
-        const room = await ctx.db.get(session.studyRoomId);
+    return sorted
+      .filter((session) => !isDuplicateRoom(roomById.get(session.studyRoomId)))
+      .map((session) => {
+        const room = roomById.get(session.studyRoomId);
         return {
           _id: session._id,
           studyRoomId: session.studyRoomId,
@@ -165,8 +204,7 @@ export const GetSessionHistory = query({
           durationSeconds: session.durationSeconds,
           summaryStatus: session.summaryStatus ?? "none",
         };
-      })
-    );
+      });
   },
 });
 
@@ -184,23 +222,23 @@ export const GetRecentSessions = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
     const sorted = [...sessions].sort((a, b) => b.startedAt - a.startedAt);
-    const limited = sorted.slice(0, args.limit ?? 10);
+    const { roomById, isDuplicateRoom } = await resolveSessionRooms(ctx, args.userId, sorted);
+    const visible = sorted.filter((session) => !isDuplicateRoom(roomById.get(session.studyRoomId)));
+    const limited = visible.slice(0, args.limit ?? 10);
 
-    return Promise.all(
-      limited.map(async (session) => {
-        const room = await ctx.db.get(session.studyRoomId);
-        return {
-          _id: session._id,
-          studyRoomId: session.studyRoomId,
-          roomTitle: room?.title ?? "Deleted room",
-          roomTopic: room?.topic ?? "",
-          status: session.status,
-          startedAt: session.startedAt,
-          endedAt: session.endedAt,
-          durationSeconds: session.durationSeconds,
-        };
-      })
-    );
+    return limited.map((session) => {
+      const room = roomById.get(session.studyRoomId);
+      return {
+        _id: session._id,
+        studyRoomId: session.studyRoomId,
+        roomTitle: room?.title ?? "Deleted room",
+        roomTopic: room?.topic ?? "",
+        status: session.status,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        durationSeconds: session.durationSeconds,
+      };
+    });
   },
 });
 
@@ -320,6 +358,21 @@ async function resolveLinkedSource(ctx: QueryCtx, room: Doc<"studyRooms">) {
   return sources;
 }
 
+// M2 - deterministic "which of these same-topic rooms is the canonical
+// one" policy, shared by CreateStudyRoom's idempotent lookup below and
+// CleanupDuplicateStudyRooms further down: the room with the most session
+// history wins (the brief's "prefer the record containing the most useful
+// valid learning history"), and the oldest one is the tiebreaker so the
+// result is stable across repeated calls on the same input.
+async function pickCanonicalRoom(ctx: QueryCtx, rooms: Doc<"studyRooms">[]) {
+  const withCounts = await Promise.all(
+    rooms.map(async (room) => ({ room, sessionCount: (await getSessionsForRoom(ctx, room._id)).length }))
+  );
+  return withCounts.sort((a, b) =>
+    a.sessionCount !== b.sessionCount ? b.sessionCount - a.sessionCount : a.room.createdAt - b.room.createdAt
+  )[0].room;
+}
+
 export const CreateStudyRoom = mutation({
   args: {
     userId: v.id("UserTable"),
@@ -344,30 +397,67 @@ export const CreateStudyRoom = mutation({
     const title = args.title.trim();
     const topic = args.topic.trim();
 
-    // Guards against a genuine duplicate room: the Create Study Room form
-    // already disables its own submit button while a request is in flight,
-    // but that can't protect against a second, independent submission - a
-    // slow network response that reads as "hung" followed by a retry (e.g.
-    // navigating back and re-clicking a "Start Learning in AI Study Room"
-    // link, or resubmitting the form on a fresh page load), where the first
-    // call's insert still lands after the user has already retried. If this
-    // exact user created a room with the same title+topic (and the same
-    // Study Planner task, when linked) moments ago, reuse it instead of
-    // inserting a near-identical duplicate.
-    const DUPLICATE_WINDOW_MS = 30_000;
-    const recentRooms = await ctx.db
-      .query("studyRooms")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    const duplicate = recentRooms.find(
-      (r) =>
-        r.title === title &&
-        r.topic === topic &&
-        r.studyTaskId === refs.studyTaskId &&
-        now - r.createdAt < DUPLICATE_WINDOW_MS
-    );
-    if (duplicate) {
-      return { studyRoomId: duplicate._id };
+    // M2 - canonical identity: a room tied to a specific Study Planner task
+    // (or, lacking that, a whole plan) must resolve to the SAME room every
+    // time this is called for it, no matter how long ago it was created -
+    // "Start Learning" from Study Planner, "Start Learning" from the Study
+    // Room dashboard, and a retried/duplicate submission must all land on
+    // one canonical room per topic, not just within a short window. This
+    // lookup-then-insert is race-safe under Convex's own transactional (OCC)
+    // commit model without any extra locking: two concurrent calls here both
+    // read the same by_studyTask/by_studyPlan range, so if one of them
+    // inserts first, the other's read set is invalidated and Convex
+    // automatically retries it - on retry it finds the just-inserted room
+    // and reuses it instead of inserting a second one.
+    if (refs.studyTaskId || refs.studyPlanId) {
+      const existing = refs.studyTaskId
+        ? await ctx.db
+            .query("studyRooms")
+            .withIndex("by_studyTask", (q) => q.eq("studyTaskId", refs.studyTaskId))
+            .collect()
+        : await ctx.db
+            .query("studyRooms")
+            .withIndex("by_studyPlan", (q) => q.eq("studyPlanId", refs.studyPlanId))
+            .collect();
+      const owned = existing.filter((r) => r.userId === args.userId);
+      if (owned.length > 0) {
+        const canonical = await pickCanonicalRoom(ctx, owned);
+        // The learner is explicitly returning to this topic - bring an
+        // archived canonical room back into view rather than leaving it
+        // (correctly reused, but invisibly archived) for this to silently
+        // look like nothing happened.
+        if (canonical.status === "archived") {
+          await ctx.db.patch(canonical._id, { status: "active", updatedAt: now });
+        }
+        return { studyRoomId: canonical._id };
+      }
+    } else {
+      // No stable topic reference to key off (a fully independent room -
+      // manually created, or started from Question Bank/Resume Match/
+      // Interview Review, all unaffected by this change per the M2 brief's
+      // scope protection). Fall back to the original short dedup window,
+      // which only guards against an accidental double-submit of the exact
+      // same form (the Create Study Room form already disables its own
+      // submit button while a request is in flight, but that can't protect
+      // against a second, independent submission - a slow network response
+      // that reads as "hung" followed by a retry, where the first call's
+      // insert still lands after the user has already retried).
+      const DUPLICATE_WINDOW_MS = 30_000;
+      const recentRooms = await ctx.db
+        .query("studyRooms")
+        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+        .collect();
+      const duplicate = recentRooms.find(
+        (r) =>
+          r.title === title &&
+          r.topic === topic &&
+          !r.studyTaskId &&
+          !r.studyPlanId &&
+          now - r.createdAt < DUPLICATE_WINDOW_MS
+      );
+      if (duplicate) {
+        return { studyRoomId: duplicate._id };
+      }
     }
 
     const studyRoomId = await ctx.db.insert("studyRooms", {
@@ -515,6 +605,177 @@ export async function findStudyRoomsForStudyPlan(
   }
   return [...byId.values()].filter((room) => room.userId === userId);
 }
+
+// Used by StudyPlanner.GetStudyRoomTopics (Study Room Topic Sync) to attach
+// each Study Planner task's own Study Room status - which room, if any, and
+// that room's most recent session - without StudyPlanner importing anything
+// beyond this one helper. studyRooms/studyRoomSessions stay Study Room's own
+// tables to query; a task with no room at all resolves to `null` rather than
+// being omitted, so the caller can still show it as "not started."
+export async function getLatestStudyRoomForTasks(
+  ctx: QueryCtx,
+  userId: Id<"UserTable">,
+  taskIds: Id<"studyPlanTasks">[]
+) {
+  const result = new Map<
+    Id<"studyPlanTasks">,
+    {
+      studyRoomId: Id<"studyRooms">;
+      roomStatus: "active" | "archived";
+      totalSessions: number;
+      lastAccessedAt?: number;
+      latestSessionId?: Id<"studyRoomSessions">;
+      latestSessionStatus?: "in_progress" | "completed" | "abandoned";
+    } | null
+  >();
+
+  await Promise.all(
+    taskIds.map(async (taskId) => {
+      const rooms = await ctx.db
+        .query("studyRooms")
+        .withIndex("by_studyTask", (q) => q.eq("studyTaskId", taskId))
+        .collect();
+      const owned = rooms.filter((r) => r.userId === userId);
+      if (owned.length === 0) {
+        result.set(taskId, null);
+        return;
+      }
+      // A task should only ever have one linked room (CreateStudyRoom's
+      // idempotent lookup-or-create keeps a retried "Start Learning" from
+      // creating a second one), but if more than one still exists from
+      // before that fix - see CleanupDuplicateStudyRooms - this picks the
+      // same room CreateStudyRoom itself would resolve to, via the same
+      // pickCanonicalRoom policy, so the dashboard never shows a different
+      // "current" room than a fresh "Start Learning" click would reuse.
+      const room = owned.length === 1 ? owned[0] : await pickCanonicalRoom(ctx, owned);
+      const sessions = await getSessionsForRoom(ctx, room._id);
+      const latestSession = [...sessions].sort((a, b) => b.startedAt - a.startedAt)[0];
+      result.set(taskId, {
+        studyRoomId: room._id,
+        roomStatus: room.status,
+        totalSessions: sessions.length,
+        lastAccessedAt: room.lastAccessedAt,
+        latestSessionId: latestSession?._id,
+        latestSessionStatus: latestSession?.status,
+      });
+    })
+  );
+
+  return result;
+}
+
+// --- M2: duplicate Study Room detection + cleanup ---------------------------
+// Before CreateStudyRoom's idempotent lookup-or-create (above), a learner
+// could end up with more than one room for the same Study Planner task -
+// e.g. "Start Learning" from Study Planner after archiving the first room
+// for that task, or any retry more than 30 seconds after the first click
+// (the old dedup window). These two functions find and safely merge any
+// such pre-existing duplicates; nothing here runs automatically - see
+// AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md for how to invoke them.
+
+// Read-only: groups this user's rooms by studyTaskId and reports every group
+// with more than one room, so a duplicate can be reviewed before
+// CleanupDuplicateStudyRooms (below) is ever run. Never changes anything.
+export const FindDuplicateStudyRooms = query({
+  args: { userId: v.id("UserTable") },
+  handler: async (ctx, args) => {
+    const rooms = await ctx.db
+      .query("studyRooms")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    const byTask = new Map<Id<"studyPlanTasks">, Doc<"studyRooms">[]>();
+    for (const room of rooms) {
+      if (!room.studyTaskId) continue;
+      const group = byTask.get(room.studyTaskId) ?? [];
+      group.push(room);
+      byTask.set(room.studyTaskId, group);
+    }
+
+    const duplicateGroups = [];
+    for (const [studyTaskId, group] of byTask) {
+      if (group.length < 2) continue;
+      const canonical = await pickCanonicalRoom(ctx, group);
+      const rows = await Promise.all(
+        group.map(async (room) => ({
+          studyRoomId: room._id,
+          title: room.title,
+          status: room.status,
+          totalSessions: (await getSessionsForRoom(ctx, room._id)).length,
+          createdAt: room.createdAt,
+          isCanonical: room._id === canonical._id,
+        }))
+      );
+      duplicateGroups.push({ studyTaskId, rooms: rows });
+    }
+    return duplicateGroups;
+  },
+});
+
+// Merges every detected duplicate group into its one canonical room: every
+// duplicate's sessions (and everything scoped to those sessions in
+// convex/StudyRoomWorkspace.ts's tables, which key off studyRoomSessionId
+// and so move automatically) are re-parented onto the canonical room -
+// nothing is deleted. A merged-away duplicate is kept, not removed: it's
+// archived and its title is tagged "[Merged into ...]" so the merge stays
+// visible and reversible, per the brief's "do not perform irreversible
+// deletion of learning history." Returns a migration report - see
+// AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md for sample output and how to run
+// this (it is not invoked automatically by anything).
+export const CleanupDuplicateStudyRooms = mutation({
+  args: { userId: v.id("UserTable") },
+  handler: async (ctx, args) => {
+    const rooms = await ctx.db
+      .query("studyRooms")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    const byTask = new Map<Id<"studyPlanTasks">, Doc<"studyRooms">[]>();
+    for (const room of rooms) {
+      if (!room.studyTaskId) continue;
+      const group = byTask.get(room.studyTaskId) ?? [];
+      group.push(room);
+      byTask.set(room.studyTaskId, group);
+    }
+
+    const report = [];
+    for (const [studyTaskId, group] of byTask) {
+      if (group.length < 2) continue;
+      const now = Date.now();
+      const canonical = await pickCanonicalRoom(ctx, group);
+      const duplicates = group.filter((room) => room._id !== canonical._id);
+
+      let sessionsReassigned = 0;
+      for (const duplicate of duplicates) {
+        const sessions = await getSessionsForRoom(ctx, duplicate._id);
+        for (const session of sessions) {
+          await ctx.db.patch(session._id, { studyRoomId: canonical._id, updatedAt: now });
+          sessionsReassigned++;
+        }
+        if (!duplicate.title.startsWith("[Merged into ")) {
+          await ctx.db.patch(duplicate._id, {
+            status: "archived",
+            title: `[Merged into "${canonical.title}"] ${duplicate.title}`,
+            updatedAt: now,
+          });
+        }
+      }
+
+      if (canonical.status === "archived") {
+        await ctx.db.patch(canonical._id, { status: "active", updatedAt: now });
+      }
+
+      report.push({
+        studyTaskId,
+        canonicalStudyRoomId: canonical._id,
+        mergedStudyRoomIds: duplicates.map((d) => d._id),
+        sessionsReassigned,
+        recordsRemoved: 0,
+      });
+    }
+    return report;
+  },
+});
 
 // Shown in Study Planner's "Delete this study plan?" dialog, so the learner
 // knows how many Study Rooms the delete will also remove.
@@ -796,6 +1057,20 @@ export const EndStudyRoomSession = mutation({
   },
 });
 
+// M2 - "Repeat Lesson" used to reactivate (and wipe) one specific finished
+// session row in place. That destroyed the learner's own history - exactly
+// what the M2 brief's "Preserve Learning History" requirement rules out -
+// and was also a second, parallel session-creation mechanism alongside
+// StartStudyRoomSession, which the brief explicitly asks not to have. Both
+// the Study Room dashboard (RoomCard) and the "Repeat" button on a past
+// session row (SessionRow) now call StartStudyRoomSession with that
+// session's studyRoomId instead: it resumes the room's live session if one
+// exists, or starts a brand-new attempt under the SAME canonical room
+// otherwise - every previous attempt's transcript, summary and completion
+// timestamp stays exactly as it was. RepeatStudyRoomSession is removed
+// rather than left in place unused, since keeping a destructive mutation
+// around that nothing calls would just invite the same bug again later.
+
 // --- Phase 1: single-active-tab Tutor lease ---------------------------------
 // Only one browser tab may run the live ElevenLabs Tutor (and hold the
 // microphone) for a session. The owning tab acquires a lease, renews it on a
@@ -810,6 +1085,54 @@ async function getTutorLease(ctx: MutationCtx | QueryCtx, sessionId: Id<"studyRo
     .withIndex("by_session", (q) => q.eq("studyRoomSessionId", sessionId))
     .first();
 }
+
+// A session sitting at "in_progress" with no live (unexpired) Tutor lease
+// for longer than this is treated as abandoned - stale in a way that
+// normally only happens from before Phase 1's lease/beforeunload tracking
+// existed, or a crashed tab that never got to send its beacon. Long enough
+// that a session which just started (before its tab has acquired its first
+// lease) or a lease mid-renewal is never mistaken for stale.
+const STALE_IN_PROGRESS_GRACE_MS = 2 * 60_000;
+
+// Self-healing reconciliation for the exact "a session looks permanently
+// 'In Progress' in Recent Sessions/My Study Rooms, but nothing is actually
+// live" symptom: a session has no currently-active Tutor connection when it
+// has no lease row at all, or its lease has expired (no tab has renewed it
+// within TUTOR_LEASE_MS). Only ends sessions this user owns. Nothing is
+// deleted - the session row, its transcript, notes and summary are
+// untouched; only `status`/`endedAt`/`durationSeconds` change, exactly like
+// a normal EndStudyRoomSession(reason: "abandoned") call - so this is safe
+// to run as often as useful (called once per Study Room dashboard load from
+// app/(routes)/study-room/page.tsx).
+export const ReconcileStaleInProgressSessions = mutation({
+  args: { userId: v.id("UserTable") },
+  handler: async (ctx, args) => {
+    const sessions = await ctx.db
+      .query("studyRoomSessions")
+      .withIndex("by_user_status", (q) => q.eq("userId", args.userId).eq("status", "in_progress"))
+      .collect();
+    const now = Date.now();
+    let reconciled = 0;
+
+    for (const session of sessions) {
+      if (now - session.updatedAt < STALE_IN_PROGRESS_GRACE_MS) continue;
+      const lease = await getTutorLease(ctx, session._id);
+      const hasLiveLease = !!lease && lease.expiresAt > now;
+      if (hasLiveLease) continue;
+
+      await ctx.db.patch(session._id, {
+        status: "abandoned",
+        endedAt: now,
+        durationSeconds: Math.round((now - session.startedAt) / 1000),
+        updatedAt: now,
+      });
+      if (lease) await ctx.db.delete(lease._id);
+      reconciled++;
+    }
+
+    return { reconciled };
+  },
+});
 
 // `force` is an explicit "use this tab instead" takeover - the previous
 // owner notices on its next heartbeat (or immediately, via BroadcastChannel,
