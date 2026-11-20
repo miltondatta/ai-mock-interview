@@ -207,12 +207,10 @@ export function normalizeExtractedProfile(raw: unknown): ExtractedProfile {
     };
 }
 
-export type ResumeSource = { kind: "pdf"; bytes: Buffer } | { kind: "text"; text: string };
+export type ResumeSource = { kind: "pdf"; bytes: Buffer };
 
 export async function extractProfileFromResume(source: ResumeSource): Promise<ExtractedProfile> {
-    const resumePart = source.kind === "pdf"
-        ? { inlineData: { mimeType: "application/pdf", data: source.bytes.toString("base64") } }
-        : { text: `RESUME TEXT:\n"""\n${source.text.slice(0, 60000)}\n"""` };
+    const resumePart = { inlineData: { mimeType: "application/pdf", data: source.bytes.toString("base64") } };
 
     let responseText: string | undefined;
     try {

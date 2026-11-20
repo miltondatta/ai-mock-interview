@@ -130,7 +130,7 @@ function StudySchedulePage() {
         ) : (
           <>
             {view === "day" && <DayView anchorDate={anchorDate} tasks={tasks} userId={userId} />}
-            {view === "week" && <WeekView weekStart={startOfWeek(anchorDate)} tasks={tasks} />}
+            {view === "week" && <WeekView weekStart={startOfWeek(anchorDate)} tasks={tasks} userId={userId} />}
             {view === "month" && (
               <MonthView
                 anchorDate={anchorDate}

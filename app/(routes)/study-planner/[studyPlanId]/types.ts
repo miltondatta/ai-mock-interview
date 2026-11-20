@@ -55,6 +55,10 @@ export interface PlanDetail {
   targetLevel?: Level
   availableHoursPerDay?: number
   generationMethod?: "ai" | "manual"
+  scheduleGeneratedAt?: number
+  scheduleBasisTimeline?: string
+  scheduleBasisInterviewDate?: string
+  scheduleBasisWeeklyAvailability?: string
   progress: number
   totalTasks: number
   completedTasks: number

@@ -11,9 +11,10 @@
 | **M5** | Signup and existing-user onboarding integration (optional set-up, welcome screen, dashboard prompt) | ✅ Done (not tested, per instructions) |
 | **M6** | Dashboard profile completion invitation | ✅ Done (not tested, per instructions) |
 | **M7** | Jobs module (admin-managed) + profile-based job recommendations ("Jobs for you") | ✅ Done (not tested, per instructions) |
-| Next (unscheduled) | Pre-fill Create Interview / Study Planner from the profile; Settings > Profile alignment; optional external job feed | ⏳ Not started |
+| **M8** | Interview date picker; Study Planner pre-fill + interview-driven schedule distribution; Jobs application deadlines | ✅ Done (not tested, per instructions) |
+| Next (unscheduled) | Pre-fill Create Interview from the profile; Settings > Profile alignment; optional external job feed | ⏳ Not started |
 
-**Last work done:** M7 complete.
+**Last work done:** M8 complete.
 
 ---
 
@@ -400,3 +401,63 @@ The UI can also call the Convex functions directly with `userDetail._id`, the sa
 - **M3:** ✅ Done (see the M3 section above).
 - Consider switching Settings > Profile to `UpdateProfile` so it keeps `profileCompleted` current. That was deliberately left out of M1 to stay within scope.
 - Hardening, if ever needed: add `convex/auth.config.ts` + `ConvexProviderWithClerk`. `resolveCaller` already handles a verified identity.
+
+## 7. M8: Interview date + Study Planner/Jobs integration
+
+M8 connects the onboarding timeline/availability answers to an actual calendar date, and wires that data into the
+Study Planner and Jobs modules. See `STUDY_PLANNER_IMPLEMENTATION_PROGRESS.md`'s M8 section for the scheduling
+engine details - this section covers the Profile Setup side and the cross-module wiring.
+
+### Interview date picker
+- New field `interviewDate` on `UserProfileTable` (`convex/schema.ts`), `"YYYY-MM-DD"`, same string convention as
+  every other date field in the app (never parsed into a `Date` object - see M4's schedule work for why).
+- Only meaningful alongside `interviewTimeline === "have_date"`: `convex/ProfessionalProfile.ts`'s
+  `cleanInterviewDate` rejects it otherwise, and `buildOnboardingPatch` clears a stale date automatically when the
+  timeline is switched away from `"have_date"`, even if the client forgets to send `interviewDate` itself.
+- Past dates are rejected using the **candidate's own local date**, sent from the client as `clientToday` (new
+  optional arg on `SaveOnboarding`/`CreateProfile`) via `utils/localDate.ts`'s `todayLocalDateString()` - the
+  server can't know the browser's timezone, and the milestone specifically asked for local-timezone interpretation.
+- `app/onboarding/_components/OnboardingWizard.tsx`: a native `<Input type="date">` appears under "When is your
+  interview?" only when "I have a date" is selected (matches `issue/issue05.png`'s existing layout, no redesign).
+  `canAdvance` for that step now also requires the date when that option is chosen.
+- No new date-picker dependency - follows the same native-input convention already used in 8+ Study Planner files.
+
+### Study Planner pre-fill (`app/(routes)/study-planner/create/CreateStudyPlanAITab.tsx`)
+- Loads the profile once and pre-fills subject/level/date-range/hours-per-day/preferred-days from
+  `targetJobRole`/`yearsOfExperience`/`interviewTimeline`+`interviewDate`/`weeklyAvailability` the first time the
+  form mounts - gated by a ref so it never runs twice and never overwrites a field the candidate already edited.
+- Mapping logic lives in `utils/studyPlanner/interviewTimeline.ts` (client) and is duplicated (not imported) into
+  `convex/StudyPlanner.ts` for the actual distribution engine, so the Convex deployment has no import outside
+  `convex/`. Keep the two in sync if the mapping ever changes:
+  - `have_date` -> the stored `interviewDate`; `within_week` -> +7 days; `2_4_weeks` -> +21 days (midpoint);
+    `1_3_months` -> +60 days (midpoint); `no_date` -> a 12-week **pacing estimate only**, never shown or stored as
+    a real interview date (the milestone explicitly says not to invent one).
+  - `about_2_hours`/`about_5_hours`/`10_plus_hours` map to weekly/daily-minute caps (120/60, 300/120, 600/180) used
+    by the real distribution engine, plus a simple day-count/hours-per-day default for the one-shot AI form.
+
+### Jobs application deadlines
+- New optional `applicationDeadline` (`"YYYY-MM-DD"`) on the `jobs` table, admin-entered via `/admin/jobs`
+  (`JobsManager.tsx`). Once past, `convex/Jobs.ts`'s `GetJobsForUser` excludes the listing from active results
+  automatically - the admin's own `active` toggle is left untouched.
+- Deadlines affect display and sort only (`utils/jobs/format.ts`'s `formatDeadline`/`daysUntilDeadline`, a
+  "Closing soon first" sort on `/jobs`, a badge on `JobCard.tsx` shown on both the full and compact/dashboard
+  cards) - never the match score, per "do not use interview preparation availability... to fabricate job matching
+  scores."
+
+### Files touched
+- `convex/schema.ts`, `convex/ProfessionalProfile.ts` (interviewDate); `convex/Jobs.ts`,
+  `app/api/admin/jobs/route.ts`, `app/admin/(protected)/jobs/JobsManager.tsx` (deadlines).
+- `app/onboarding/_components/OnboardingWizard.tsx`; `app/(routes)/study-planner/create/CreateStudyPlanAITab.tsx`.
+- `app/(routes)/jobs/page.tsx`, `app/(routes)/jobs/_components/JobCard.tsx`, `utils/jobs/format.ts`.
+- New: `utils/localDate.ts`, `utils/studyPlanner/interviewTimeline.ts`.
+- **Not touched:** Mock Interview, interview evaluation, the ElevenLabs agent, the AI Study Room voice agent,
+  Study Room canonical session management, Whiteboard/Code Editor/Notes, Clerk auth, billing/subscriptions.
+
+### Known limitations
+- The "no interview date yet" pacing window (12 weeks) is an internal default for bounding AI generation only -
+  it's never persisted to the profile or displayed as "your interview date."
+- `clientToday` is trusted input (not re-derived from a verified source) - acceptable here since it only loosens
+  or tightens a soft "not in the past" validation, not an authorization check.
+- Not tested, per instructions - `npx convex dev`/`deploy` needs to run to push the schema changes and new/changed
+  functions (`interviewDate`, `RedistributeSchedule`, `applicationDeadline`, etc.) before any of this works end to
+  end.

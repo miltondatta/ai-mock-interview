@@ -32,6 +32,7 @@ interface Job {
   educationRequirement?: string;
   requiredCertifications?: string[];
   source?: string;
+  applicationDeadline?: string;
   applyUrl: string;
   active: boolean;
   postedAt: number;
@@ -55,6 +56,7 @@ type Draft = {
   educationRequirement: string;
   requiredCertifications: string;
   source: string;
+  applicationDeadline: string;
   applyUrl: string;
   active: boolean;
 };
@@ -76,6 +78,7 @@ const emptyDraft = (): Draft => ({
   educationRequirement: "",
   requiredCertifications: "",
   source: "",
+  applicationDeadline: "",
   applyUrl: "",
   active: true,
 });
@@ -101,6 +104,7 @@ function toDraft(job: Job): Draft {
     educationRequirement: job.educationRequirement ?? "",
     requiredCertifications: (job.requiredCertifications ?? []).join(", "),
     source: job.source ?? "",
+    applicationDeadline: job.applicationDeadline ?? "",
     applyUrl: job.applyUrl,
     active: job.active,
   };
@@ -109,8 +113,14 @@ function toDraft(job: Job): Draft {
 const selectClass =
   "h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
+function todayDateKey(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
   const router = useRouter();
+  const todayDateString = todayDateKey();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -247,6 +257,9 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
             <Field label="Source">
               <Input value={draft.source} onChange={(e) => set("source", e.target.value)} maxLength={100} placeholder="e.g. Company website, LinkedIn" />
             </Field>
+            <Field label="Application deadline (optional)">
+              <Input type="date" value={draft.applicationDeadline} onChange={(e) => set("applicationDeadline", e.target.value)} />
+            </Field>
           </div>
 
           <Field label="Description">
@@ -291,6 +304,11 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-semibold">{job.title}</p>
                   <Badge variant={job.active ? "success" : "secondary"}>{job.active ? "Active" : "Hidden"}</Badge>
+                  {job.applicationDeadline && (
+                    <Badge variant={job.applicationDeadline < todayDateString ? "secondary" : "default"}>
+                      Deadline {job.applicationDeadline}
+                    </Badge>
+                  )}
                 </div>
                 <p className="mt-0.5 text-sm text-muted-foreground">
                   {[job.company, location, salary, job.source].filter(Boolean).join(" · ")}

@@ -1,6 +1,9 @@
-export type TaskStatus = "pending" | "in_progress" | "completed" | "skipped"
+import { getDisplayStatus, STATUS_META, type DisplayStatus, type TaskStatus } from "@/utils/studyPlanner/scheduleStatus"
+
+export type { DisplayStatus, TaskStatus }
+export { getDisplayStatus, STATUS_META }
+
 export type Priority = "low" | "medium" | "high"
-export type DisplayStatus = "completed" | "overdue" | "today" | "upcoming" | "skipped"
 
 export interface ScheduleTask {
   _id: string
@@ -47,22 +50,6 @@ export function isSameDay(a: Date, b: Date): boolean {
 export function todayDate(): Date {
   const now = new Date()
   return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-}
-
-export function getDisplayStatus(task: ScheduleTask, todayKey: string): DisplayStatus {
-  if (task.status === "completed") return "completed"
-  if (task.status === "skipped") return "skipped"
-  if (task.scheduledDate < todayKey) return "overdue"
-  if (task.scheduledDate === todayKey) return "today"
-  return "upcoming"
-}
-
-export const STATUS_META: Record<DisplayStatus, { label: string; dot: string; badge: string }> = {
-  completed: { label: "Completed", dot: "bg-success", badge: "bg-success/15 text-success" },
-  overdue: { label: "Overdue", dot: "bg-destructive", badge: "bg-destructive/10 text-destructive" },
-  today: { label: "Today", dot: "bg-primary", badge: "bg-primary/10 text-primary" },
-  upcoming: { label: "Upcoming", dot: "bg-muted-foreground/40", badge: "bg-muted text-muted-foreground" },
-  skipped: { label: "Skipped", dot: "bg-warning", badge: "bg-warning/20 text-warning-foreground" },
 }
 
 export const PRIORITY_META: Record<Priority, { label: string; className: string }> = {

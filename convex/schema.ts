@@ -221,6 +221,11 @@ export default defineSchema({
       yearsOfExperience: v.optional(v.number()),
       targetCompany: v.optional(v.string()),
       interviewTimeline: v.optional(v.string()),
+      // Set only when interviewTimeline === "have_date". "YYYY-MM-DD", the
+      // candidate's own local date - never parsed into a Date object, so
+      // there's no timezone-shift risk (same convention as every other date
+      // field in this schema).
+      interviewDate: v.optional(v.string()),
       weeklyAvailability: v.optional(v.string()),
       referralSource: v.optional(v.string()),
       // Missing means not_started. Separate from profileCompleted, so finishing
@@ -284,6 +289,9 @@ export default defineSchema({
       requiredCertifications: v.optional(v.array(v.string())),
       // Where the listing comes from, e.g. "Company website" or "LinkedIn".
       source: v.optional(v.string()),
+      // "YYYY-MM-DD". Once past, GetJobsForUser excludes the listing from
+      // active results automatically - admins don't need to also flip `active`.
+      applicationDeadline: v.optional(v.string()),
       applyUrl: v.string(),
       active: v.boolean(),
       postedAt: v.number(),
@@ -469,6 +477,18 @@ export default defineSchema({
       learningPreferences: v.optional(v.array(v.string())),
       additionalInstructions: v.optional(v.string()),
       generationMethod: v.optional(v.union(v.literal('ai'), v.literal('manual'))),
+      // M8 - last time RedistributeSchedule (convex/StudyPlanner.ts) ran for
+      // this plan, from the AI's initial generation or a candidate-triggered
+      // regeneration. Metadata only; never read to gate anything.
+      scheduleGeneratedAt: v.optional(v.number()),
+      // The profile's interviewTimeline/interviewDate/weeklyAvailability at
+      // the moment RedistributeSchedule last read them (only set when it ran
+      // without explicit overrides). The plan detail page compares these
+      // against the live profile to offer "your interview details changed -
+      // regenerate?" without forcing a regeneration on every profile edit.
+      scheduleBasisTimeline: v.optional(v.string()),
+      scheduleBasisInterviewDate: v.optional(v.string()),
+      scheduleBasisWeeklyAvailability: v.optional(v.string()),
       createdAt: v.number(),
       updatedAt: v.number(),
     })
@@ -523,6 +543,11 @@ export default defineSchema({
       // can have a date with no specific time; it can never have a time
       // without a date (the UI only exposes it once a date is set).
       scheduledTime: v.optional(v.string()),
+      // M8 - set when the candidate manually moves this task's date/time
+      // (Day/Week view or a phase's task row). RedistributeSchedule always
+      // skips a locked task unless the candidate explicitly opts in, so
+      // automatic rescheduling never silently overwrites a manual choice.
+      scheduleLockedByUser: v.optional(v.boolean()),
       order: v.number(),
       // M2 - "what done looks like" for this task, from the AI response or
       // typed manually.

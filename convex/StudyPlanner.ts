@@ -536,6 +536,10 @@ export const GetStudyPlanDetails = query({
         targetLevel: plan.targetLevel,
         availableHoursPerDay: plan.availableHoursPerDay,
         generationMethod: plan.generationMethod,
+        scheduleGeneratedAt: plan.scheduleGeneratedAt,
+        scheduleBasisTimeline: plan.scheduleBasisTimeline,
+        scheduleBasisInterviewDate: plan.scheduleBasisInterviewDate,
+        scheduleBasisWeeklyAvailability: plan.scheduleBasisWeeklyAvailability,
         progress,
         totalTasks,
         completedTasks,
@@ -812,6 +816,10 @@ export const UpdateTask = mutation({
     estimatedDuration: v.optional(v.number()),
     scheduledDate: v.optional(v.union(v.string(), v.null())),
     scheduledTime: v.optional(v.union(v.string(), v.null())),
+    // M8 - set true when a candidate manually moves this task's date/time, so
+    // RedistributeSchedule knows to leave it alone. Not set automatically;
+    // the reschedule UI passes it explicitly.
+    scheduleLockedByUser: v.optional(v.boolean()),
     completionCriteria: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -834,6 +842,208 @@ export const UpdateTask = mutation({
     });
     await ctx.db.patch(task.studyPlanId, { updatedAt: now });
     if (status !== undefined) await syncPlanCompletionStatus(ctx, task.studyPlanId);
+  },
+});
+
+// --- M8: interview-driven schedule distribution -------------------------------
+// The one genuinely new scheduling capability M8 adds: turning a profile's
+// interview timeline/date + weekly availability into actual scheduledDate
+// values for a plan's incomplete tasks. Everything else it depends on
+// (scheduledDate/scheduledTime/estimatedDuration/order, the Day/Week/Month
+// calendar, UpdateTask) already existed and is reused as-is.
+//
+// Duplicated from utils/studyPlanner/interviewTimeline.ts (the client-side
+// copy used to pre-fill the Create Study Plan form) rather than imported, so
+// this file keeps no dependency outside convex/. Keep the two in sync.
+const FLEXIBLE_PACING_WINDOW_DAYS = 84; // ~12 weeks - "no_date" has no real deadline to invent
+const DEFAULT_TASK_MINUTES = 45;
+const MAX_DISTRIBUTION_DAYS = 730; // sanity cap so a far-future date can't spin the loop forever
+const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const AVAILABILITY_CAPS: Record<string, { weeklyCapMinutes: number; dailyCapMinutes: number }> = {
+  about_2_hours: { weeklyCapMinutes: 120, dailyCapMinutes: 60 },
+  about_5_hours: { weeklyCapMinutes: 300, dailyCapMinutes: 120 },
+  "10_plus_hours": { weeklyCapMinutes: 600, dailyCapMinutes: 180 },
+};
+const DEFAULT_AVAILABILITY_CAPS = { weeklyCapMinutes: 300, dailyCapMinutes: 120 };
+
+function addDaysToKey(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const date = new Date(y, (m ?? 1) - 1, d ?? 1);
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function daysBetweenKeys(fromKey: string, toKey: string): number {
+  const [fy, fm, fd] = fromKey.split("-").map(Number);
+  const [ty, tm, td] = toKey.split("-").map(Number);
+  const from = new Date(fy, (fm ?? 1) - 1, fd ?? 1).getTime();
+  const to = new Date(ty, (tm ?? 1) - 1, td ?? 1).getTime();
+  return Math.round((to - from) / 86_400_000);
+}
+
+function weekdayAbbrOf(dateKey: string): string {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  return WEEKDAY_ABBR[new Date(y, (m ?? 1) - 1, d ?? 1).getDay()];
+}
+
+// Null means no real deadline ("no_date", or "have_date" without a date yet).
+function effectiveDeadline(timeline: string | undefined, interviewDate: string | undefined, today: string): string | null {
+  switch (timeline) {
+    case "have_date":
+      return interviewDate || null;
+    case "within_week":
+      return addDaysToKey(today, 7);
+    case "2_4_weeks":
+      return addDaysToKey(today, 21); // midpoint of 2-4 weeks
+    case "1_3_months":
+      return addDaysToKey(today, 60); // midpoint of 1-3 months
+    default:
+      return null;
+  }
+}
+
+export const RedistributeSchedule = mutation({
+  args: {
+    userId: v.id("UserTable"),
+    studyPlanId: v.id("studyPlans"),
+    // Overrides for the candidate's own profile values, so a "what if"
+    // schedule can be previewed without first editing the profile. Omitted =
+    // read from the profile; explicit null = treat as no deadline.
+    deadlineDate: v.optional(v.union(v.string(), v.null())),
+    weeklyAvailability: v.optional(v.string()),
+    // Also reschedule tasks the candidate manually moved (default: leave them).
+    includeLocked: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const plan = await requireOwnedPlan(ctx, args.userId, args.studyPlanId);
+    const today = todayDateKey();
+
+    let deadline = args.deadlineDate;
+    let weeklyAvailability = args.weeklyAvailability;
+    // Set only when this run actually read the profile (no explicit
+    // overrides), so the plan detail page can later tell "the profile moved
+    // on since this schedule was generated" from "this was a custom preview."
+    let scheduleBasis: { timeline?: string; interviewDate?: string; weeklyAvailability?: string } | null = null;
+    if (deadline === undefined || weeklyAvailability === undefined) {
+      const profile = await ctx.db
+        .query("UserProfileTable")
+        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+        .first();
+      if (deadline === undefined) deadline = effectiveDeadline(profile?.interviewTimeline, profile?.interviewDate, today);
+      if (weeklyAvailability === undefined) weeklyAvailability = profile?.weeklyAvailability;
+      scheduleBasis = {
+        timeline: profile?.interviewTimeline,
+        interviewDate: profile?.interviewDate,
+        weeklyAvailability: profile?.weeklyAvailability,
+      };
+    }
+    const caps = (weeklyAvailability && AVAILABILITY_CAPS[weeklyAvailability]) || DEFAULT_AVAILABILITY_CAPS;
+    const windowEnd = deadline || addDaysToKey(today, FLEXIBLE_PACING_WINDOW_DAYS);
+    const start = plan.startDate && plan.startDate > today ? plan.startDate : today;
+    const clampedEnd = daysBetweenKeys(start, windowEnd) > MAX_DISTRIBUTION_DAYS ? addDaysToKey(start, MAX_DISTRIBUTION_DAYS) : windowEnd;
+
+    // Reserve the last couple of eligible days before the deadline for
+    // revision/mock-practice, when the window is long enough to afford it.
+    const totalWindowDays = Math.max(0, daysBetweenKeys(start, clampedEnd));
+    const usableEnd = totalWindowDays > 5 ? addDaysToKey(clampedEnd, -2) : clampedEnd;
+
+    const [phaseDocs, taskDocs] = await Promise.all([
+      ctx.db.query("studyPlanPhases").withIndex("by_studyPlan_order", (q) => q.eq("studyPlanId", plan._id)).collect(),
+      ctx.db.query("studyPlanTasks").withIndex("by_studyPlan", (q) => q.eq("studyPlanId", plan._id)).collect(),
+    ]);
+    const phaseOrder = new Map(phaseDocs.map((p) => [p._id as string, p.order]));
+    // Preserves each task's phase/topic sequence - only scheduledDate/
+    // scheduledTime are ever patched below, so phase and Study Room
+    // relationships (keyed by the task's own immutable _id) are untouched.
+    const sequence = [...taskDocs].sort((a, b) => {
+      const pa = a.phaseId ? phaseOrder.get(a.phaseId) ?? 0 : -1;
+      const pb = b.phaseId ? phaseOrder.get(b.phaseId) ?? 0 : -1;
+      if (pa !== pb) return pa - pb;
+      return a.order - b.order;
+    });
+
+    const dayMinutesUsed = new Map<string, number>();
+    const weekMinutesUsed = new Map<number, number>();
+    const weekIndexOf = (dateKey: string) => Math.floor(daysBetweenKeys(start, dateKey) / 7);
+    function occupy(dateKey: string | undefined, minutes: number) {
+      if (!dateKey || dateKey < start || dateKey > usableEnd) return;
+      dayMinutesUsed.set(dateKey, (dayMinutesUsed.get(dateKey) ?? 0) + minutes);
+      const wk = weekIndexOf(dateKey);
+      weekMinutesUsed.set(wk, (weekMinutesUsed.get(wk) ?? 0) + minutes);
+    }
+
+    const toSchedule: Doc<"studyPlanTasks">[] = [];
+    let skippedCompleted = 0;
+    let skippedLocked = 0;
+    for (const task of sequence) {
+      const duration = task.estimatedDuration ?? DEFAULT_TASK_MINUTES;
+      if (task.status === "completed" || task.status === "skipped") {
+        skippedCompleted++;
+        occupy(task.scheduledDate, duration);
+        continue;
+      }
+      if (task.scheduleLockedByUser && !args.includeLocked) {
+        skippedLocked++;
+        occupy(task.scheduledDate, duration);
+        continue;
+      }
+      toSchedule.push(task);
+    }
+
+    const preferredDays = plan.preferredStudyDays && plan.preferredStudyDays.length > 0 ? new Set(plan.preferredStudyDays) : null;
+    const eligibleDays: string[] = [];
+    for (let d = start, i = 0; d <= usableEnd && i < MAX_DISTRIBUTION_DAYS; d = addDaysToKey(d, 1), i++) {
+      if (!preferredDays || preferredDays.has(weekdayAbbrOf(d))) eligibleDays.push(d);
+    }
+
+    const now = Date.now();
+    let scheduledCount = 0;
+    const unscheduledIds: Id<"studyPlanTasks">[] = [];
+    for (const task of toSchedule) {
+      const duration = task.estimatedDuration ?? DEFAULT_TASK_MINUTES;
+      let assignedDay: string | null = null;
+      for (const day of eligibleDays) {
+        const dayUsed = dayMinutesUsed.get(day) ?? 0;
+        // A task longer than the daily cap can still take an otherwise-empty
+        // day on its own - the cap limits how much gets piled onto one day,
+        // not how long a single topic is allowed to be.
+        const dayLimit = dayUsed === 0 ? Math.max(caps.dailyCapMinutes, duration) : caps.dailyCapMinutes;
+        const weekUsed = weekMinutesUsed.get(weekIndexOf(day)) ?? 0;
+        if (dayUsed + duration <= dayLimit && weekUsed + duration <= caps.weeklyCapMinutes) {
+          assignedDay = day;
+          break;
+        }
+      }
+      if (assignedDay) {
+        occupy(assignedDay, duration);
+        await ctx.db.patch(task._id, { scheduledDate: assignedDay, scheduledTime: undefined, updatedAt: now });
+        scheduledCount++;
+      } else {
+        // Couldn't fit before the deadline - left unscheduled rather than
+        // overflowing past it or leaving a now-stale date in place.
+        if (task.scheduledDate) await ctx.db.patch(task._id, { scheduledDate: undefined, scheduledTime: undefined, updatedAt: now });
+        unscheduledIds.push(task._id);
+      }
+    }
+
+    await ctx.db.patch(plan._id, {
+      scheduleGeneratedAt: now,
+      ...(scheduleBasis ? {
+        scheduleBasisTimeline: scheduleBasis.timeline,
+        scheduleBasisInterviewDate: scheduleBasis.interviewDate,
+        scheduleBasisWeeklyAvailability: scheduleBasis.weeklyAvailability,
+      } : {}),
+      updatedAt: now,
+    });
+
+    return {
+      scheduledCount,
+      skippedCompleted,
+      skippedLocked,
+      unscheduledCount: unscheduledIds.length,
+      compressed: unscheduledIds.length > 0,
+    };
   },
 });
 

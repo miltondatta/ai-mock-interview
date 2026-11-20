@@ -1,13 +1,17 @@
 "use client"
 
-import React from "react"
+import React, { useState } from "react"
 import Link from "next/link"
+import { CalendarClock } from "lucide-react"
+import type { Id } from "@/convex/_generated/dataModel"
 import { addDays, isSameDay, getDisplayStatus, toDateKey, STATUS_META, type ScheduleTask } from "./types"
+import { RescheduleControl } from "./RescheduleControl"
 
-export function WeekView({ weekStart, tasks }: { weekStart: Date; tasks: ScheduleTask[] }) {
+export function WeekView({ weekStart, tasks, userId }: { weekStart: Date; tasks: ScheduleTask[]; userId: Id<"UserTable"> }) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
   const today = new Date()
   const todayKey = toDateKey(today)
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null)
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
@@ -37,22 +41,31 @@ export function WeekView({ weekStart, tasks }: { weekStart: Date; tasks: Schedul
                   const status = getDisplayStatus(task, todayKey)
                   const meta = STATUS_META[status]
                   return (
-                    <Link
-                      key={task._id}
-                      href={`/study-planner/tasks/${task._id}`}
-                      className="rounded-lg bg-muted/60 px-2.5 py-2 transition-colors hover:bg-muted"
-                    >
+                    <div key={task._id} className="rounded-lg bg-muted/60 px-2.5 py-2">
                       <div className="flex items-center gap-1.5">
                         <span className={`size-1.5 shrink-0 rounded-full ${meta.dot}`} />
-                        <p
-                          className={`truncate text-xs font-medium ${status === "completed" ? "text-muted-foreground line-through" : "text-foreground"}`}
-                          title={task.title}
+                        <Link href={`/study-planner/tasks/${task._id}`} className="min-w-0 flex-1">
+                          <p
+                            className={`truncate text-xs font-medium hover:underline ${status === "completed" ? "text-muted-foreground line-through" : "text-foreground"}`}
+                            title={task.title}
+                          >
+                            {task.title}
+                          </p>
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => setReschedulingId((id) => (id === task._id ? null : task._id))}
+                          aria-label="Reschedule task"
+                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
-                          {task.title}
-                        </p>
+                          <CalendarClock className="size-3.5" />
+                        </button>
                       </div>
                       <p className="mt-0.5 truncate pl-3 text-[11px] text-muted-foreground">{task.planTitle}</p>
-                    </Link>
+                      {reschedulingId === task._id && (
+                        <RescheduleControl task={task} userId={userId} onDone={() => setReschedulingId(null)} />
+                      )}
+                    </div>
                   )
                 })
               )}

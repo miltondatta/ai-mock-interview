@@ -38,6 +38,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { Id } from "@/convex/_generated/dataModel"
+import { RESUME_UPLOAD_LIMITS } from "../resume-match-analyzer/constants"
 import { cn } from "@/lib/utils"
 import { PRACTICE_QUESTIONS, FREE_PLAN_MAX_QUESTIONS } from "./questions"
 import { DEFAULT_PRACTICE_COACH_LANGUAGE, findLanguageOption, useLanguageOptions } from "../settings/languages"
@@ -226,6 +227,12 @@ function PracticeCoach() {
       setResumeFile(null)
       setResumeUploadKey((key) => key + 1)
       setInvalidFileNotice("Only PDF files are supported for your resume. Please upload a .pdf file.")
+      return
+    }
+    if (file.size > RESUME_UPLOAD_LIMITS.maxBytes) {
+      setResumeFile(null)
+      setResumeUploadKey((key) => key + 1)
+      setInvalidFileNotice(`Your resume must be ${RESUME_UPLOAD_LIMITS.maxSize} or smaller.`)
       return
     }
     setResumeFile(file)

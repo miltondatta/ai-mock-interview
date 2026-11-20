@@ -14,91 +14,101 @@ import {
   type PhaseDetail,
   type TaskDetail,
 } from "./types"
-
-function todayKey() {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
-}
+import { isTaskOverdue } from "@/utils/studyPlanner/scheduleStatus"
+import { todayLocalDateString } from "@/utils/localDate"
+import { RescheduleControl } from "../schedule/RescheduleControl"
 
 export function TaskRow({
   task,
+  userId,
   onEdit,
   onDelete,
   onToggleDone,
 }: {
   task: TaskDetail
+  userId: Id<"UserTable">
   onEdit: () => void
   onDelete: () => void
   onToggleDone: () => void
 }) {
+  const [rescheduling, setRescheduling] = useState(false)
   const statusMeta = TASK_STATUS_META[task.status]
   const priorityMeta = PRIORITY_META[task.priority]
   const isDone = task.status === "completed"
-  const isOverdue = task.status === "pending" || task.status === "in_progress"
-    ? !!task.scheduledDate && task.scheduledDate < todayKey()
-    : false
+  const isOverdue = isTaskOverdue(task, todayLocalDateString())
 
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-border p-3">
-      <button
-        type="button"
-        onClick={onToggleDone}
-        aria-label={isDone ? "Mark task incomplete" : "Mark task complete"}
-        className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border transition-colors ${
-          isDone ? "border-success bg-success text-success-foreground" : "border-border hover:border-primary"
-        }`}
-      >
-        {isDone && <Check className="size-3.5" />}
-      </button>
+    <div className="rounded-xl border border-border p-3">
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          onClick={onToggleDone}
+          aria-label={isDone ? "Mark task incomplete" : "Mark task complete"}
+          className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            isDone ? "border-success bg-success text-success-foreground" : "border-border hover:border-primary"
+          }`}
+        >
+          {isDone && <Check className="size-3.5" />}
+        </button>
 
-      <div className="min-w-0 flex-1">
-        <p className={`text-sm font-medium ${isDone ? "text-muted-foreground line-through" : "text-foreground"}`}>
-          {task.title}
-        </p>
-        {task.description && <p className="mt-0.5 text-xs text-muted-foreground">{task.description}</p>}
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {task.estimatedDuration !== undefined && (
-            <span className="flex items-center gap-1">
-              <Clock className="size-3.5" /> {task.estimatedDuration} min
-            </span>
-          )}
-          {task.scheduledDate && (
-            <span className={`flex items-center gap-1 ${isOverdue ? "font-medium text-destructive" : ""}`}>
-              <CalendarClock className="size-3.5" /> {formatDate(task.scheduledDate)}
-              {task.scheduledTime && ` · ${task.scheduledTime}`}
-              {isOverdue && " · Overdue"}
-            </span>
-          )}
-          <span className={`rounded-full px-2 py-0.5 font-semibold ${priorityMeta.className}`}>{priorityMeta.label}</span>
-          <span className={`rounded-full px-2 py-0.5 font-semibold ${statusMeta.className}`}>{statusMeta.label}</span>
+        <div className="min-w-0 flex-1">
+          <p className={`text-sm font-medium ${isDone ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            {task.title}
+          </p>
+          {task.description && <p className="mt-0.5 text-xs text-muted-foreground">{task.description}</p>}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {task.estimatedDuration !== undefined && (
+              <span className="flex items-center gap-1">
+                <Clock className="size-3.5" /> {task.estimatedDuration} min
+              </span>
+            )}
+            {task.scheduledDate && (
+              <span className={`flex items-center gap-1 ${isOverdue ? "font-medium text-destructive" : ""}`}>
+                <CalendarClock className="size-3.5" /> {formatDate(task.scheduledDate)}
+                {task.scheduledTime && ` · ${task.scheduledTime}`}
+                {isOverdue && " · Overdue"}
+              </span>
+            )}
+            <span className={`rounded-full px-2 py-0.5 font-semibold ${priorityMeta.className}`}>{priorityMeta.label}</span>
+            <span className={`rounded-full px-2 py-0.5 font-semibold ${statusMeta.className}`}>{statusMeta.label}</span>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setRescheduling((v) => !v)}
+            aria-label="Reschedule task"
+            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <CalendarClock className="size-3.5" />
+          </button>
+          <Link
+            href={`/study-planner/tasks/${task._id}`}
+            aria-label="View task details"
+            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </Link>
+          <button
+            type="button"
+            onClick={onEdit}
+            aria-label="Edit task"
+            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Pencil className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            aria-label="Delete task"
+            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
         </div>
       </div>
-
-      <div className="flex shrink-0 items-center gap-1">
-        <Link
-          href={`/study-planner/tasks/${task._id}`}
-          aria-label="View task details"
-          className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <ExternalLink className="size-3.5" />
-        </Link>
-        <button
-          type="button"
-          onClick={onEdit}
-          aria-label="Edit task"
-          className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <Pencil className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          aria-label="Delete task"
-          className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      </div>
+      {rescheduling && <RescheduleControl task={task} userId={userId} onDone={() => setRescheduling(false)} />}
     </div>
   )
 }
@@ -203,6 +213,7 @@ function PhaseCard({ phase, userId, defaultOpen, isFirst, isLast, onEditPhase, o
               <TaskRow
                 key={task._id}
                 task={task}
+                userId={userId}
                 onEdit={() => onEditTask(task)}
                 onDelete={() => onDeleteTask(task)}
                 onToggleDone={() => toggleTaskDone(task)}

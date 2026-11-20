@@ -16,6 +16,8 @@ import type { Id } from "@/convex/_generated/dataModel";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
+const MAX_RESUME_BYTES = 1 * 1024 * 1024;
+
 // Video generation via N8N can take a while - match the raised proxy timeout
 // used by the other N8N-backed routes.
 export const maxDuration = 300;
@@ -55,6 +57,17 @@ export async function POST(req: NextRequest) {
             { error: "Please upload your resume or add a job title and job description." },
             { status: 400 }
         );
+    }
+    if (file) {
+        // Don't rely on the browser-reported type/extension alone - check the PDF
+        // signature, and reject anything else immediately.
+        const signature = Buffer.from(await file.slice(0, 5).arrayBuffer()).toString("latin1");
+        if (!file.name.toLowerCase().endsWith(".pdf") || signature !== "%PDF-") {
+            return NextResponse.json({ error: "Only PDF files are supported for your resume." }, { status: 400 });
+        }
+        if (file.size > MAX_RESUME_BYTES) {
+            return NextResponse.json({ error: "Your resume must be 1 MB or smaller." }, { status: 400 });
+        }
     }
     const lang = (formData.get("lang") as string | null) || "en";
     const selectedQuestionsRaw = (formData.get("selectedQuestions") as string | null) ?? "[]";

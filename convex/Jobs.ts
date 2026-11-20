@@ -34,9 +34,17 @@ const jobInput = {
   educationRequirement: v.optional(v.string()),
   requiredCertifications: v.optional(v.array(v.string())),
   source: v.optional(v.string()),
+  // "YYYY-MM-DD". Once past, GetJobsForUser excludes the listing from active
+  // results automatically - admins don't also need to flip `active`.
+  applicationDeadline: v.optional(v.string()),
   applyUrl: v.string(),
   active: v.boolean(),
 };
+
+function todayDateKey(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 
 // --- Validation ---------------------------------------------------------------
 
@@ -98,6 +106,10 @@ function cleanJob(args: ObjectType<typeof jobInput>) {
   const currency = text(args.salaryCurrency, "Currency", 3)?.toUpperCase();
   if (currency && !/^[A-Z]{3}$/.test(currency)) throw new Error("Currency must be a 3-letter code such as USD.");
   const certs = list(args.requiredCertifications, "certification", 20, 200);
+  const applicationDeadline = text(args.applicationDeadline, "Application deadline", 10);
+  if (applicationDeadline && !/^\d{4}-\d{2}-\d{2}$/.test(applicationDeadline)) {
+    throw new Error("Application deadline must be a valid date.");
+  }
   return stripUndefined({
     title: text(args.title, "Job title", 200, true)!,
     company: text(args.company, "Company", 200, true)!,
@@ -115,6 +127,7 @@ function cleanJob(args: ObjectType<typeof jobInput>) {
     educationRequirement: text(args.educationRequirement, "Education requirement", 200),
     requiredCertifications: certs.length > 0 ? certs : undefined,
     source: text(args.source, "Source", 100),
+    applicationDeadline,
     applyUrl: applyUrl(args.applyUrl),
     active: args.active,
   });
@@ -183,11 +196,15 @@ export const GetJobsForUser = query({
   handler: async (ctx, args) => {
     const limit = Math.max(1, Math.min(MAX_JOBS_SCANNED, Math.floor(args.limit ?? MAX_JOBS_SCANNED)));
     const user = await ctx.db.get(args.userId);
-    const jobs = await ctx.db
+    const today = todayDateKey();
+    const activeJobs = await ctx.db
       .query("jobs")
       .withIndex("by_active_posted", q => q.eq("active", true))
       .order("desc")
       .take(MAX_JOBS_SCANNED);
+    // Expired listings drop out of "active" results automatically - the
+    // admin's own `active` toggle is left untouched either way.
+    const jobs = activeJobs.filter(job => !job.applicationDeadline || job.applicationDeadline >= today);
 
     const profile = user
       ? await ctx.db.query("UserProfileTable").withIndex("by_user", q => q.eq("userId", args.userId)).first()

@@ -6,7 +6,7 @@ import { addResumeToLibrary } from "@/utils/resumeLibrary";
 
 const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
-const MAX_RESUME_BYTES = 10 * 1024 * 1024;
+const MAX_RESUME_BYTES = 1 * 1024 * 1024;
 
 // Adds a resume to the candidate's resume library - used by the Resume Match
 // Analyzer and Manage Resume. Re-uploading a file they already have returns
@@ -28,13 +28,14 @@ export async function POST(req: NextRequest) {
     if (!file) {
         return NextResponse.json({ error: "Please choose a resume to upload." }, { status: 400 });
     }
-    if (file.size > MAX_RESUME_BYTES) {
-        return NextResponse.json({ error: "Your resume must be 10 MB or smaller." }, { status: 400 });
-    }
-    // Don't rely on the browser-reported type/extension alone - check the PDF signature.
+    // Don't rely on the browser-reported type/extension alone - check the PDF signature,
+    // and reject anything else immediately.
     const signature = Buffer.from(await file.slice(0, 5).arrayBuffer()).toString("latin1");
     if (!file.name.toLowerCase().endsWith(".pdf") || signature !== "%PDF-") {
         return NextResponse.json({ error: "Only PDF files are supported for your resume." }, { status: 400 });
+    }
+    if (file.size > MAX_RESUME_BYTES) {
+        return NextResponse.json({ error: "Your resume must be 1 MB or smaller." }, { status: 400 });
     }
 
     try {

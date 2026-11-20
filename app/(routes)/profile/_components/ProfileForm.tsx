@@ -49,7 +49,7 @@ import {
 import { TagInput } from "./TagInput"
 import { ExistingResumeDialog } from "./ExistingResumeDialog"
 
-const MAX_RESUME_BYTES = 10 * 1024 * 1024
+const MAX_RESUME_BYTES = 1 * 1024 * 1024
 
 // Convex error text looks like "[CONVEX M(...)] ... Uncaught Error: <msg>".
 function convexMessage(e: unknown, fallback: string): string {
@@ -191,12 +191,13 @@ export function ProfileForm({ userId, profile }: { userId: Id<"UserTable">; prof
     if (fileInputRef.current) fileInputRef.current.value = ""
     if (!file) return
     const name = file.name.toLowerCase()
-    if (!name.endsWith(".pdf") && !name.endsWith(".docx")) {
-      setImportError("Please choose a PDF or DOCX file.")
+    const isPdf = file.type === "application/pdf" || name.endsWith(".pdf")
+    if (!isPdf) {
+      setImportError("Please choose a PDF file.")
       return
     }
     if (file.size > MAX_RESUME_BYTES) {
-      setImportError("Your resume must be 10 MB or smaller.")
+      setImportError("Your resume must be 1 MB or smaller.")
       return
     }
     const body = new FormData()
@@ -271,7 +272,7 @@ export function ProfileForm({ userId, profile }: { userId: Id<"UserTable">; prof
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".pdf,application/pdf"
           className="hidden"
           onChange={e => onFileChosen(e.target.files?.[0])}
         />
@@ -284,7 +285,7 @@ export function ProfileForm({ userId, profile }: { userId: Id<"UserTable">; prof
           {importing === "existing" ? "Reading resume…" : "Use existing resume"}
         </Button>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">PDF or DOCX, up to 10 MB. PDFs are also saved to your resume library.</p>
+      <p className="mt-2 text-xs text-muted-foreground">PDF Only. Maximum size 1 MB. PDFs are also saved to your resume library.</p>
 
       {linkedResumeName && form.resumeId && (
         <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/40 py-1.5 pr-1.5 pl-3 text-xs text-muted-foreground">

@@ -85,7 +85,7 @@ export const REFERRAL_OPTIONS: { value: ReferralIcon; label: string }[] = [
 ]
 
 export const MAX_YEARS_OF_EXPERIENCE = 60
-export const MAX_RESUME_BYTES = 10 * 1024 * 1024
+export const MAX_RESUME_BYTES = 1 * 1024 * 1024
 
 // Autocomplete source for the role step. Any title not listed here can still
 // be typed in and saved.

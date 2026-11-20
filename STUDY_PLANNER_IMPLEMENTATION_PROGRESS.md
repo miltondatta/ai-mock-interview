@@ -1,11 +1,13 @@
 # Study Planner Implementation Progress
 
-Last updated: 2026-11-13 (paused by explicit user request, not a quota limit)
+Last updated: 2026-11-20
 
-## Status: M1, M2, M3, M4 all COMPLETE and approved-pending-review. Paused before M5 (no M5 spec has been given yet).
+## Status: M1-M4 complete (as before). M8 (profile-driven scheduling) now also complete.
 
-No further implementation work has been requested or started beyond M4. This file exists
-because the user asked to pause and preserve state, not because of an error or a quota cutoff.
+Note: M5-M7 were never defined for *this* module specifically - a separate AI Study Room feature was built later
+(see `AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md`) and the Profile Setup module's own M7 was its Jobs module (see
+`AI_PROFILE_SETUP_IMPLEMENTATION_PROGRESS.md`). M8 below is the milestone that formally connects Profile Setup's
+interview timeline/date/weekly-availability to this Study Planner, which is why it jumps from M4 to M8.
 
 ---
 
@@ -80,6 +82,70 @@ because the user asked to pause and preserve state, not because of an error or a
 - Dashboard (`app/(routes)/study-planner/page.tsx`): added one "Schedule" button next to "Create Study Plan" —
   the only Dashboard change, needed purely so `/study-planner/schedule` is reachable from the UI.
 
+### M8 — Interview-driven schedule distribution (profile integration)
+Connects Profile Setup's `interviewTimeline`/`interviewDate`/`weeklyAvailability` (see
+`AI_PROFILE_SETUP_IMPLEMENTATION_PROGRESS.md` M8) to this module. Builds on M1-M4 - no rebuild, no second
+scheduling system. Key finding before starting: this module already had almost everything the spec asked for
+(`scheduledDate`/`scheduledTime`/`estimatedDuration`/`order`, the Day/Week/Month calendar, inline reschedule in Day
+view). The one genuinely new piece is the distribution algorithm itself.
+
+- **`RedistributeSchedule` mutation** (`convex/StudyPlanner.ts`) - the actual new scheduling capability. Given a
+  plan, resolves an effective deadline + weekly/daily minute caps (from explicit args, or the caller's profile via
+  a server-side copy of `utils/studyPlanner/interviewTimeline.ts`'s mapping - duplicated rather than imported so
+  this file has no dependency outside `convex/`), then walks the plan's incomplete, unlocked tasks in their
+  existing `(phase.order, task.order)` sequence and assigns each the earliest day that fits both caps, reusing
+  `studyPlans.preferredStudyDays` as the allowed weekdays. Completed/skipped tasks and tasks with
+  `scheduleLockedByUser: true` are left alone (their existing dates still count against daily/weekly capacity so
+  nothing double-books on top of them). Tasks that can't fit before the deadline are left unscheduled (date
+  cleared) rather than overflowing past it. The last ~2 eligible days before a multi-day deadline are reserved
+  (no new topics scheduled there) as a lightweight stand-in for "reserve time for revision/mock practice."
+  Returns `{ scheduledCount, skippedCompleted, skippedLocked, unscheduledCount, compressed }` for the UI to
+  summarize, including the "couldn't fit, here's a compressed result" case the spec asked for.
+- **Manual-reschedule lock**: new `studyPlanTasks.scheduleLockedByUser` (optional boolean), set by the reschedule
+  UI (not automatically) so `RedistributeSchedule` never silently overwrites a candidate's manual change unless
+  they explicitly check "Also reschedule topics I manually moved" in the Regenerate Schedule dialog.
+- **Schedule generation metadata**: new `studyPlans.scheduleGeneratedAt` (last run timestamp) and
+  `scheduleBasisTimeline`/`scheduleBasisInterviewDate`/`scheduleBasisWeeklyAvailability` (the profile values
+  actually used, only set when the mutation read them from the profile rather than an explicit override). The
+  plan detail page compares the stored basis against the live profile to show a dismissible "your interview
+  details changed - regenerate?" nudge, without ever auto-regenerating.
+- **UI**: `app/(routes)/study-planner/[studyPlanId]/RegenerateScheduleDialog.tsx` (new) - the only way
+  `RedistributeSchedule` is triggered, with a two-stage confirm → result view. A "Regenerate Schedule" button was
+  added to the plan detail page header.
+- **Create Study Plan pre-fill**: `CreateStudyPlanAITab.tsx` now pre-fills subject/level/date-range/hours-per-day/
+  days from the profile on first load only (ref-gated, never overwrites an edit already made). No change to the
+  generation endpoint or `planGenerator.ts` itself.
+- **Reschedule-UI parity**: `DayView.tsx`'s inline `RescheduleControl` was extracted to
+  `schedule/RescheduleControl.tsx` and reused in `WeekView.tsx` (new per-task reschedule button) and
+  `PhaseCard.tsx`'s `TaskRow` (new reschedule button + control) - previously Day view only.
+- **Status model**: `getDisplayStatus`/`DisplayStatus`/`STATUS_META` (previously defined inline in
+  `schedule/types.ts`) moved to a new shared, framework-agnostic module `utils/studyPlanner/scheduleStatus.ts`
+  (re-exported from `schedule/types.ts` so existing imports keep working), gaining an explicit `"in_progress"`
+  bucket in the Day/Week/Month calendar's status badges (previously an in-progress task was only distinguishable
+  by its raw status elsewhere, not in the calendar views). `PhaseCard.tsx`'s separate overdue check now calls the
+  same shared `isTaskOverdue` predicate instead of its own copy - was duplicated 3 ways (here, `schedule/types.ts`,
+  and a dashboard-stat count in `convex/StudyPlanner.ts`); the Convex one was deliberately left as its own inline
+  copy rather than importing the shared util, to keep `convex/StudyPlanner.ts` free of imports outside `convex/`.
+- Schema additions (`convex/schema.ts`): `studyPlanTasks.scheduleLockedByUser`, `studyPlans.scheduleGeneratedAt` /
+  `scheduleBasisTimeline` / `scheduleBasisInterviewDate` / `scheduleBasisWeeklyAvailability` - all optional,
+  additive only.
+- New shared utils: `utils/localDate.ts` (local-date string helpers, used by onboarding too),
+  `utils/studyPlanner/interviewTimeline.ts` (client-side timeline/availability → scheduling-input mapping, kept in
+  sync with the duplicated server-side copy in `convex/StudyPlanner.ts`), `utils/studyPlanner/scheduleStatus.ts`
+  (shared display-status logic).
+- **Not touched**: Mock Interview, interview evaluation, the ElevenLabs agent, the AI Study Room voice agent,
+  Study Room canonical session management (`CreateStudyRoom`'s dedup-by-`studyTaskId` logic is unaffected -
+  rescheduling only ever patches `scheduledDate`/`scheduledTime` on the existing task document, never recreates
+  it), Whiteboard/Code Editor/Notes, Clerk auth, billing/subscriptions, Jobs matching logic (`jobMatching.ts`'s
+  scoring is untouched - application deadlines there are display/sort only, see the Profile Setup progress doc).
+- **Known limitations**: the distribution engine is day-level only (it clears, rather than preserves, a task's
+  time-of-day when moving it); the "reserve time for revision" buffer is a fixed ~2-day heuristic, not a dedicated
+  revision/mock-interview task type; a task whose `estimatedDuration` alone exceeds the daily cap is still placed
+  on an otherwise-empty day (the cap limits how much gets piled onto one day, not how long a single topic can be).
+- **Not tested, per instructions.** `npx convex dev`/`deploy` needs to run to push the schema changes and the new
+  `RedistributeSchedule` mutation (and the `UpdateTask`/`GetStudyPlanDetails` signature changes) before any of
+  this reaches the deployment - see the M1-era note below, which still applies.
+
 ---
 
 ## Full file inventory (everything under the Study Planner module)
@@ -116,6 +182,20 @@ app/(routes)/study-planner/schedule/WeekView.tsx                   (new)
 app/(routes)/study-planner/schedule/MonthView.tsx                  (new)
 app/(routes)/study-planner/schedule/types.ts                       (new)
 app/(routes)/study-planner/tasks/[taskId]/page.tsx                 (new)
+
+# M8 additions
+app/(routes)/study-planner/create/CreateStudyPlanAITab.tsx          (modified - profile pre-fill)
+app/(routes)/study-planner/schedule/RescheduleControl.tsx           (new - extracted from DayView.tsx)
+app/(routes)/study-planner/schedule/DayView.tsx                     (modified - uses RescheduleControl.tsx)
+app/(routes)/study-planner/schedule/WeekView.tsx                    (modified - gained reschedule control)
+app/(routes)/study-planner/schedule/types.ts                        (modified - re-exports utils/studyPlanner/scheduleStatus.ts)
+app/(routes)/study-planner/[studyPlanId]/page.tsx                   (modified - Regenerate Schedule button + nudge banner)
+app/(routes)/study-planner/[studyPlanId]/PhaseCard.tsx              (modified - reschedule control + shared overdue check)
+app/(routes)/study-planner/[studyPlanId]/RegenerateScheduleDialog.tsx (new)
+app/(routes)/study-planner/[studyPlanId]/types.ts                   (modified - scheduleBasis* fields)
+utils/localDate.ts                                                  (new)
+utils/studyPlanner/interviewTimeline.ts                             (new)
+utils/studyPlanner/scheduleStatus.ts                                (new)
 ```
 
 Unrelated files also showing as modified in `git status` (from earlier, separate bug-fix requests in this same
@@ -144,6 +224,11 @@ session, NOT part of Study Planner - do not revert these):
    during M4 (see M4's "Study Room scope" decision above). Not a bug.
 4. **No M5 (or any milestone beyond M4) has been requested.** Do not invent scope. Wait for explicit
    instructions before writing any more Study Planner code.
+5. **(M8 update)** An AI Study Room feature now exists in the codebase (built after this doc's M1-M4 notes above
+   were written - see `AI_STUDY_ROOM_IMPLEMENTATION_PROGRESS.md`), so item 3 above is stale: `/study-room` no
+   longer 404s. M8 (this section) did not touch Study Room at all. `convex/_generated/api.d.ts` still needs
+   `npx convex dev`/`deploy` run to pick up M8's schema changes and the new `RedistributeSchedule` mutation -
+   nothing in M8 was tested, per the same standing instruction as M1-M4.
 
 ---
 

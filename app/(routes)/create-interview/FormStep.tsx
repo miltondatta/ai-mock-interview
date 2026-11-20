@@ -19,6 +19,7 @@ interface FormStepProps {
   file: File | null
   onFileSelected: (file: File) => void
   onFileRemoved: () => void
+  fileError?: string | null
   savedResumeId: string | null
   onSavedResumeSelected: (resume: SavedResume | null) => void
   resumeUploadKey: number
@@ -37,6 +38,7 @@ function FormStep({
   file,
   onFileSelected,
   onFileRemoved,
+  fileError,
   savedResumeId,
   onSavedResumeSelected,
   resumeUploadKey,
@@ -92,6 +94,13 @@ function FormStep({
             <div className="mt-2 flex flex-col gap-3">
               <SavedResumePicker selectedId={savedResumeId} onSelect={onSavedResumeSelected} />
               <ResumeUpload key={resumeUploadKey} setFiles={onFileSelected} file={file} onRemove={onFileRemoved} />
+              <p className="text-xs text-muted-foreground">PDF Only. Maximum size 1 MB</p>
+              {fileError && (
+                <p role="alert" className="flex items-start gap-1.5 text-sm text-destructive">
+                  <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                  {fileError}
+                </p>
+              )}
             </div>
           </div>
 

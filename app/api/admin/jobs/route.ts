@@ -51,6 +51,7 @@ function parseJob(body: Record<string, unknown>) {
     educationRequirement: str(body.educationRequirement),
     requiredCertifications: strList(body.requiredCertifications),
     source: str(body.source),
+    applicationDeadline: str(body.applicationDeadline),
     applyUrl: str(body.applyUrl) ?? "",
     active: body.active !== false,
   };

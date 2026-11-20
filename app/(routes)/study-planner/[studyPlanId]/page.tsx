@@ -16,6 +16,7 @@ import {
   Plus,
   Flag,
   CalendarRange,
+  CalendarSync,
   ListChecks,
   Clock,
   TrendingUp,
@@ -32,6 +33,7 @@ import PhaseFormDialog from "./PhaseFormDialog"
 import TaskFormDialog from "./TaskFormDialog"
 import MilestoneFormDialog from "./MilestoneFormDialog"
 import ConfirmDialog from "./ConfirmDialog"
+import RegenerateScheduleDialog from "./RegenerateScheduleDialog"
 import {
   LEVEL_LABELS,
   PLAN_STATUS_META,
@@ -74,6 +76,7 @@ function StudyPlanDetailsPage() {
     api.StudyPlanner.GetStudyPlanDetails,
     userId ? { userId, studyPlanId } : "skip"
   ) as StudyPlanDetails | null | undefined
+  const profile = useQuery(api.ProfessionalProfile.GetMyProfile, userId ? { userId } : "skip")
 
   const setStudyPlanStatus = useMutation(api.StudyPlanner.SetStudyPlanStatus)
   const deleteStudyPlan = useMutation(api.StudyPlanner.DeleteStudyPlan)
@@ -89,7 +92,11 @@ function StudyPlanDetailsPage() {
   const [taskDialog, setTaskDialog] = useState<{ open: boolean; phaseId?: string; task?: TaskDetail }>({ open: false })
   const [milestoneDialog, setMilestoneDialog] = useState<{ open: boolean; milestone?: MilestoneDetail }>({ open: false })
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
+  const [regenerateOpen, setRegenerateOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Dismissed for this page visit only - not worth persisting across
+  // sessions for a nudge the "Regenerate Schedule" button already covers.
+  const [scheduleNudgeDismissed, setScheduleNudgeDismissed] = useState(false)
 
   // Only fetched while the "Delete this study plan?" dialog is open.
   const linkedStudyRoomCount = useQuery(
@@ -118,6 +125,18 @@ function StudyPlanDetailsPage() {
   const statusMeta = PLAN_STATUS_META[plan.status as PlanStatus]
   const canPauseResume = plan.status === "active" || plan.status === "paused"
   const canArchive = plan.status !== "archived"
+
+  // Only meaningful once a schedule has actually been generated from the
+  // profile at least once (scheduleBasisTimeline set) - a plan whose
+  // schedule was always set manually/by AI-generation-only has nothing to
+  // compare against, so it's never nudged.
+  const interviewDetailsChanged =
+    plan.status !== "archived" &&
+    !!plan.scheduleBasisTimeline &&
+    !!profile &&
+    (profile.interviewTimeline !== plan.scheduleBasisTimeline ||
+      (profile.interviewDate ?? "") !== (plan.scheduleBasisInterviewDate ?? "") ||
+      profile.weeklyAvailability !== plan.scheduleBasisWeeklyAvailability)
 
   async function handleConfirm() {
     if (!confirmTarget || !userId) return
@@ -244,6 +263,16 @@ function StudyPlanDetailsPage() {
             </button>
           )}
 
+          {plan.status !== "archived" && (
+            <button
+              type="button"
+              onClick={() => setRegenerateOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground shadow-xs transition-colors hover:bg-muted"
+            >
+              <CalendarSync className="size-4" /> Regenerate Schedule
+            </button>
+          )}
+
           <div className="relative">
             <button
               type="button"
@@ -282,6 +311,20 @@ function StudyPlanDetailsPage() {
           </div>
         </div>
       </div>
+
+      {interviewDetailsChanged && !scheduleNudgeDismissed && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-foreground">
+          <p>Your interview timeline or weekly availability changed since this schedule was generated.</p>
+          <div className="flex shrink-0 items-center gap-3">
+            <button type="button" onClick={() => setRegenerateOpen(true)} className="font-semibold text-primary hover:underline">
+              Regenerate schedule
+            </button>
+            <button type="button" onClick={() => setScheduleNudgeDismissed(true)} aria-label="Dismiss" className="text-muted-foreground hover:text-foreground">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
         <StatTile icon={TrendingUp} label="Overall progress" value={`${plan.progress}%`} />
@@ -345,6 +388,7 @@ function StudyPlanDetailsPage() {
               <TaskRow
                 key={task._id}
                 task={task}
+                userId={userId}
                 onEdit={() => setTaskDialog({ open: true, task })}
                 onDelete={() => setConfirmTarget({ kind: "task", task })}
                 onToggleDone={() =>
@@ -420,6 +464,13 @@ function StudyPlanDetailsPage() {
       <div className="h-10" />
 
       <EditPlanDialog open={editPlanOpen} onOpenChange={setEditPlanOpen} userId={userId} plan={plan} />
+
+      <RegenerateScheduleDialog
+        open={regenerateOpen}
+        onOpenChange={setRegenerateOpen}
+        userId={userId}
+        studyPlanId={plan._id as Id<"studyPlans">}
+      />
 
       <PhaseFormDialog
         open={phaseDialog.open}

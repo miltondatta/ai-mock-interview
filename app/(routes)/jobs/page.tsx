@@ -8,6 +8,7 @@ import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { MATCH_THRESHOLD } from "@/convex/jobMatching"
 import { JobCard } from "./_components/JobCard"
+import { daysUntilDeadline } from "@/utils/jobs/format"
 
 // Jobs page (M7): every active job posted by admins (/admin/jobs). With a
 // complete profile, jobs are sorted by match score and can be filtered to
@@ -17,16 +18,29 @@ export default function JobsPage() {
   const data = useQuery(api.Jobs.GetJobsForUser, userDetail?._id ? { userId: userDetail._id } : "skip")
   const [search, setSearch] = useState("")
   const [matchesOnly, setMatchesOnly] = useState(false)
+  const [closingSoonFirst, setClosingSoonFirst] = useState(false)
 
   const filtered = useMemo(() => {
     if (!data) return []
     const q = search.trim().toLowerCase()
-    return data.jobs.filter(({ job, match }) => {
+    const matched = data.jobs.filter(({ job, match }) => {
       if (matchesOnly && (!match || match.score < MATCH_THRESHOLD)) return false
       if (!q) return true
       return [job.title, job.company, job.location, ...job.requiredSkills].some(f => f?.toLowerCase().includes(q))
     })
-  }, [data, search, matchesOnly])
+    // Pure reordering of the same relevance-ranked results - never changes
+    // which jobs are shown or their match scores, per "don't let application
+    // deadlines fabricate job matching."
+    if (!closingSoonFirst) return matched
+    return [...matched].sort((a, b) => {
+      const da = daysUntilDeadline(a.job.applicationDeadline)
+      const db = daysUntilDeadline(b.job.applicationDeadline)
+      if (da === null && db === null) return 0
+      if (da === null) return 1
+      if (db === null) return -1
+      return da - db
+    })
+  }, [data, search, matchesOnly, closingSoonFirst])
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 md:py-12">
@@ -82,6 +96,10 @@ export default function JobsPage() {
                 Strong matches only
               </label>
             )}
+            <label className="flex shrink-0 cursor-pointer items-center gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={closingSoonFirst} onChange={e => setClosingSoonFirst(e.target.checked)} className="size-4 accent-primary" />
+              Closing soon first
+            </label>
           </div>
 
           {filtered.length === 0 ? (

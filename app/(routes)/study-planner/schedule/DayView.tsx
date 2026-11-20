@@ -2,9 +2,7 @@
 
 import React, { useState } from "react"
 import Link from "next/link"
-import { useMutation } from "convex/react"
 import { Clock, CalendarClock, CheckCircle2, ExternalLink } from "lucide-react"
-import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import {
   PRIORITY_META,
@@ -14,55 +12,7 @@ import {
   toDateKey,
   type ScheduleTask,
 } from "./types"
-
-function RescheduleControl({
-  task,
-  userId,
-  onDone,
-}: {
-  task: ScheduleTask
-  userId: Id<"UserTable">
-  onDone: () => void
-}) {
-  const updateTask = useMutation(api.StudyPlanner.UpdateTask)
-  const [date, setDate] = useState(task.scheduledDate)
-  const [time, setTime] = useState(task.scheduledTime ?? "")
-
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
-      <input
-        type="date"
-        value={date}
-        onChange={(e) => setDate(e.target.value)}
-        className="rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-      />
-      <input
-        type="time"
-        value={time}
-        onChange={(e) => setTime(e.target.value)}
-        className="rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-      />
-      <button
-        type="button"
-        onClick={async () => {
-          await updateTask({
-            userId,
-            taskId: task._id as Id<"studyPlanTasks">,
-            scheduledDate: date || null,
-            scheduledTime: date && time ? time : null,
-          })
-          onDone()
-        }}
-        className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90"
-      >
-        Save
-      </button>
-      <button type="button" onClick={onDone} className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted">
-        Cancel
-      </button>
-    </div>
-  )
-}
+import { RescheduleControl } from "./RescheduleControl"
 
 export function DayView({ anchorDate, tasks, userId }: { anchorDate: Date; tasks: ScheduleTask[]; userId: Id<"UserTable"> }) {
   const dayKey = toDateKey(anchorDate)

@@ -53,3 +53,26 @@ export function applyHost(url: string): string {
     return ""
   }
 }
+
+// Whole days until an "YYYY-MM-DD" application deadline, or null when there
+// isn't one. GetJobsForUser already excludes jobs whose deadline has fully
+// passed, so a non-null result here is always 0 (today) or more.
+export function daysUntilDeadline(applicationDeadline: string | undefined): number | null {
+  if (!applicationDeadline) return null
+  const [y, m, d] = applicationDeadline.split("-").map(Number)
+  const deadline = new Date(y, (m ?? 1) - 1, d ?? 1)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((deadline.getTime() - today.getTime()) / 86_400_000)
+}
+
+export const CLOSING_SOON_DAYS = 7
+
+// "Apply today", "Closes tomorrow", "Closes in 5 days", or null.
+export function formatDeadline(applicationDeadline: string | undefined): string | null {
+  const days = daysUntilDeadline(applicationDeadline)
+  if (days === null) return null
+  if (days <= 0) return "Apply today"
+  if (days === 1) return "Closes tomorrow"
+  return `Closes in ${days} days`
+}

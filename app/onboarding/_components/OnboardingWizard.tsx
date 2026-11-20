@@ -23,6 +23,7 @@ import type { Id } from "@/convex/_generated/dataModel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { todayLocalDateString } from "@/utils/localDate"
 import {
   INTENT_OPTIONS,
   INTERVIEW_TIMELINE_OPTIONS,
@@ -53,6 +54,7 @@ interface OnboardingPayload {
   yearsOfExperience?: number
   targetCompany?: string
   interviewTimeline?: string
+  interviewDate?: string | null
   weeklyAvailability?: string
   referralSource?: string
 }
@@ -101,6 +103,7 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
   )
   const [company, setCompany] = useState(profile?.targetCompany ?? "")
   const [timeline, setTimeline] = useState(profile?.interviewTimeline)
+  const [interviewDate, setInterviewDate] = useState(profile?.interviewDate ?? "")
   const [availability, setAvailability] = useState(profile?.weeklyAvailability)
   const [referral, setReferral] = useState(profile?.referralSource)
   const [resume, setResume] = useState<LinkedResume | null>(
@@ -123,7 +126,7 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
   const canAdvance: Record<number, boolean> = {
     [STEP.role]: role.trim().length > 0,
     [STEP.experience]: yearsValue !== null && !yearsInvalid,
-    [STEP.timeline]: !!timeline && !!availability,
+    [STEP.timeline]: !!timeline && !!availability && (timeline !== "have_date" || !!interviewDate),
     [STEP.resume]: !uploading,
     [STEP.referral]: !!referral,
   }
@@ -136,7 +139,7 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
     setBusy(true)
     setError(null)
     try {
-      await saveOnboarding({ userId, ...payload, currentStep: nextStep })
+      await saveOnboarding({ userId, ...payload, currentStep: nextStep, clientToday: todayLocalDateString() })
       setStep(nextStep)
     } catch (e) {
       setError(errorMessage(e, "We couldn't save your answer. Please try again."))
@@ -183,7 +186,11 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
       case STEP.experience:
         return saveAndGo(STEP.timeline, { yearsOfExperience: yearsValue ?? undefined, targetCompany: company })
       case STEP.timeline:
-        return saveAndGo(STEP.resume, { interviewTimeline: timeline, weeklyAvailability: availability })
+        return saveAndGo(STEP.resume, {
+          interviewTimeline: timeline,
+          interviewDate: timeline === "have_date" ? interviewDate : null,
+          weeklyAvailability: availability,
+        })
       case STEP.resume:
         // The resume is linked as soon as it's uploaded, so there's nothing else to save.
         return saveAndGo(STEP.referral, {})
@@ -215,7 +222,7 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
       return
     }
     if (file.size > MAX_RESUME_BYTES) {
-      setError("Your resume must be 10 MB or smaller.")
+      setError("Your resume must be 1 MB or smaller.")
       return
     }
     setUploading(true)
@@ -425,11 +432,36 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
               </h2>
               <div role="radiogroup" aria-labelledby="onboarding-timeline" className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                 {INTERVIEW_TIMELINE_OPTIONS.map(o => (
-                  <SelectCard key={o.value} selected={timeline === o.value} disabled={busy} onSelect={() => setTimeline(o.value)} className="h-11">
+                  <SelectCard
+                    key={o.value}
+                    selected={timeline === o.value}
+                    disabled={busy}
+                    onSelect={() => {
+                      setTimeline(o.value)
+                      if (o.value !== "have_date") setInterviewDate("")
+                    }}
+                    className="h-11"
+                  >
                     {o.label}
                   </SelectCard>
                 ))}
               </div>
+              {timeline === "have_date" && (
+                <div className="mt-3">
+                  <label htmlFor="onboarding-interview-date" className="block text-sm font-medium text-foreground">
+                    When is your interview scheduled?
+                  </label>
+                  <Input
+                    id="onboarding-interview-date"
+                    type="date"
+                    min={todayLocalDateString()}
+                    value={interviewDate}
+                    disabled={busy}
+                    onChange={e => setInterviewDate(e.target.value)}
+                    className="mt-2 h-11 max-w-xs bg-card px-3.5"
+                  />
+                </div>
+              )}
             </div>
             <div>
               <h2 id="onboarding-availability" className="flex items-center gap-2 text-lg font-semibold text-primary">
@@ -608,7 +640,7 @@ function ResumeStep({
           <p className="mt-4 text-sm font-medium text-foreground">
             {uploading ? "Uploading your resume…" : "Drop your resume here, or click to choose"}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">PDF, up to 10 MB</p>
+          <p className="mt-1 text-xs text-muted-foreground">PDF Only. Maximum size 1 MB</p>
           <input
             ref={inputRef}
             type="file"

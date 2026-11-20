@@ -13,6 +13,8 @@ const convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Interview question generation can take a while (AI generation via N8N), match the raised proxy timeout
 export const maxDuration = 300;
 
+const MAX_RESUME_BYTES = 1 * 1024 * 1024;
+
 // Gemini sometimes emits raw, unescaped control characters (e.g. literal newlines) inside
 // JSON string values, which JSON.parse rejects. Escape/strip control chars only while inside
 // a string literal so structural whitespace outside strings is left untouched.
@@ -142,6 +144,18 @@ export async function POST(req:NextRequest) {
     const hasFile = !!file && file.size > 0;
     // Set instead of `file` when the candidate picked a resume from their library.
     const savedResumeId = (formData.get('resumeId') as string | null) ?? '';
+
+    if (hasFile && file) {
+        // Don't rely on the browser-reported type/extension alone - check the PDF
+        // signature, and reject anything else immediately.
+        const signature = Buffer.from(await file.slice(0, 5).arrayBuffer()).toString("latin1");
+        if (!file.name.toLowerCase().endsWith(".pdf") || signature !== "%PDF-") {
+            return NextResponse.json({ error: "Only PDF files are supported for your resume." }, { status: 400 });
+        }
+        if (file.size > MAX_RESUME_BYTES) {
+            return NextResponse.json({ error: "Your resume must be 1 MB or smaller." }, { status: 400 });
+        }
+    }
     // Paused until package/credit options are integrated - resume by uncommenting.
     // const rateLimitUserId = user?.primaryEmailAddress?.emailAddress??'';
     // const rateLimitStatus = await convexClient.mutation(api.rateLimit.consumeGenerateInterviewQuestions, { userId: rateLimitUserId });

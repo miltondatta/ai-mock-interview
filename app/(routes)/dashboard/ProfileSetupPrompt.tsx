@@ -1,75 +1,49 @@
 "use client"
 
-import React, { useContext, useRef, useState } from "react"
+import React, { useContext, useEffect, useState } from "react"
 import Link from "next/link"
-import { useMutation, useQuery } from "convex/react"
-import { ArrowRight, BriefcaseBusiness, LoaderCircle } from "lucide-react"
+import { useQuery } from "convex/react"
+import { useSession } from "@clerk/nextjs"
+import { ArrowRight, BriefcaseBusiness } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { Button } from "@/components/ui/button"
+import { dismissProfileSetupPrompt, isProfileSetupPromptDismissed } from "@/utils/profileSetupPrompt"
 
-// How long "Maybe Later" (or "Skip for Now" on /welcome) hides the full
-// invitation before it's shown again. It keeps coming back until the profile
-// is complete.
-const SNOOZE_MS = 7 * 24 * 60 * 60 * 1000
-
-// Dashboard profile completion invitation (M6). It replaces the M5 set-up
+// Dashboard profile completion invitation. It replaces the onboarding set-up
 // card rather than adding a second one, so the dashboard only ever has one
-// invitation. Everything comes from Convex (GetOnboardingStatus):
-//   - profile complete        -> nothing. It disappears once the profile is completed.
-//   - snoozed (recent dismissal) -> a one-line link, so set-up stays reachable.
-//   - otherwise               -> the full invitation card.
-// Dismissal is stored on the server (profilePromptDismissedAt), so it holds
-// across refreshes, devices and sign-ins, and it never changes profile or
-// onboarding completion. Only the "is the snooze over yet" check uses the
-// browser clock. Nothing here redirects (see M5 "Redirect loops").
+// invitation.
+//   - profile complete -> nothing. It disappears once the profile is completed.
+//   - "Maybe Later"    -> hidden for the rest of this sign-in only (see
+//     utils/profileSetupPrompt). Signing out and back in - including after a
+//     session timeout - gets a new Clerk session id, so the invitation shows
+//     again next time if the profile is still incomplete.
 export default function ProfileSetupPrompt() {
   const { userDetail } = useContext(UserDetailContext)
+  const { session } = useSession()
   const status = useQuery(
     api.ProfessionalProfile.GetOnboardingStatus,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   )
-  const dismiss = useMutation(api.ProfessionalProfile.DismissProfilePrompt)
-  const [dismissing, setDismissing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const inFlight = useRef(false)
-  // Read once per mount. A dashboard visit after the snooze ends shows the card again.
-  const [now] = useState(() => Date.now())
+  const [dismissed, setDismissed] = useState(false)
 
-  if (!status || status.isProfileComplete) return null
+  // Re-checked whenever the session id changes (sign-in/out), so a new
+  // session never inherits the previous one's dismissal.
+  useEffect(() => {
+    setDismissed(isProfileSetupPromptDismissed(session?.id))
+  }, [session?.id])
 
-  const snoozed = status.profilePromptDismissedAt !== null && now - status.profilePromptDismissedAt < SNOOZE_MS
+  if (!status || status.isProfileComplete || dismissed) return null
+
+  const onMaybeLater = () => {
+    dismissProfileSetupPrompt(session?.id)
+    setDismissed(true)
+  }
+
   const started = status.profileCompletionPercent > 0
 
-  if (snoozed) {
-    return (
-      <Link href="/profile/edit" className="mt-6 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80">
-        <BriefcaseBusiness className="size-4" />
-        {started ? "Finish your profile" : "Complete your profile"} for personalized job recommendations
-        <ArrowRight className="size-3.5" />
-      </Link>
-    )
-  }
-
-  const onMaybeLater = async () => {
-    if (inFlight.current || !userDetail?._id) return
-    inFlight.current = true
-    setDismissing(true)
-    setError(null)
-    try {
-      // The reactive query refreshes and swaps the card for the one-line link.
-      await dismiss({ userId: userDetail._id })
-    } catch (e) {
-      console.error("Failed to dismiss profile invitation:", e)
-      setError("Couldn't hide this right now. Please try again.")
-    } finally {
-      inFlight.current = false
-      setDismissing(false)
-    }
-  }
-
   // The M2 wizard's quick questions are still offered as an optional
-  // shortcut, as in M5, but only until they've been answered.
+  // shortcut, but only until they've been answered.
   const wizardLink = status.isOnboardingComplete
     ? null
     : status.status === "in_progress"
@@ -113,11 +87,9 @@ export default function ProfileSetupPrompt() {
               {wizardLink.label}
             </Link>
           )}
-          {error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}
         </div>
         <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:items-center">
-          <Button variant="ghost" size="lg" disabled={dismissing} onClick={onMaybeLater} className="h-10 px-4 text-muted-foreground">
-            {dismissing && <LoaderCircle className="animate-spin" />}
+          <Button variant="ghost" size="lg" onClick={onMaybeLater} className="h-10 px-4 text-muted-foreground">
             Maybe Later
           </Button>
           <Button size="lg" nativeButton={false} render={<Link href="/profile/edit" />} className="h-10 px-5">

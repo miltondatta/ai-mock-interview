@@ -32,6 +32,7 @@ import {
   DEFAULT_INTERVIEW_LEVEL,
   DEFAULT_QUESTION_COUNT,
 } from "../_components/InterviewOptions"
+import { RESUME_UPLOAD_LIMITS } from "../resume-match-analyzer/constants"
 
 interface CreateInterviewWizardProps {
   userId: Id<"UserTable">
@@ -57,6 +58,7 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
   const [loading, setLoading] = useState(false)
   const [interviewId, setInterviewId] = useState<string | null>(null)
   const [formNotice, setFormNotice] = useState<{ type: "resume-missing" | "description-missing"; message: string } | null>(null)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   const onHandleInputChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -164,10 +166,28 @@ function CreateInterviewWizard({ initialLanguages, initialPreferences }: CreateI
             onHandleInputChange={onHandleInputChange}
             file={file}
             onFileSelected={(selected) => {
+              const isPdf = selected.type === "application/pdf" || selected.name.toLowerCase().endsWith(".pdf")
+              if (!isPdf) {
+                setFile(null)
+                setResumeUploadKey((key) => key + 1)
+                setFileError("Only PDF files are supported for your resume. Please upload a .pdf file.")
+                return
+              }
+              if (selected.size > RESUME_UPLOAD_LIMITS.maxBytes) {
+                setFile(null)
+                setResumeUploadKey((key) => key + 1)
+                setFileError(`Your resume must be ${RESUME_UPLOAD_LIMITS.maxSize} or smaller.`)
+                return
+              }
+              setFileError(null)
               setFile(selected)
               setSavedResume(null)
             }}
-            onFileRemoved={() => setFile(null)}
+            onFileRemoved={() => {
+              setFile(null)
+              setFileError(null)
+            }}
+            fileError={fileError}
             savedResumeId={savedResume?.id ?? null}
             onSavedResumeSelected={(resume) => {
               setSavedResume(resume)

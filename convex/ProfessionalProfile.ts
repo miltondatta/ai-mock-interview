@@ -59,6 +59,7 @@ const onboardingArgs = {
     yearsOfExperience: v.optional(v.union(v.number(), v.null())),
     targetCompany: v.optional(v.string()),
     interviewTimeline: v.optional(v.string()),
+    interviewDate: v.optional(v.union(v.string(), v.null())),
     weeklyAvailability: v.optional(v.string()),
     referralSource: v.optional(v.string()),
 };
@@ -89,6 +90,7 @@ type OnboardingInput = {
     yearsOfExperience?: number | null;
     targetCompany?: string;
     interviewTimeline?: string;
+    interviewDate?: string | null;
     weeklyAvailability?: string;
     referralSource?: string;
 };
@@ -194,6 +196,21 @@ function cleanMonth(value: string | undefined, label: string): string | undefine
     const trimmed = value.trim();
     if (!trimmed) return undefined;
     if (!/^\d{4}(-(0[1-9]|1[0-2]))?$/.test(trimmed)) throw new Error(`${label} must be in YYYY or YYYY-MM format.`);
+    return trimmed;
+}
+
+// Only meaningful alongside interviewTimeline === "have_date" - a value
+// submitted with any other timeline (or with none) is rejected rather than
+// silently stored. `today` is the candidate's own local "YYYY-MM-DD" (the
+// server can't know their timezone), so a date earlier than that is rejected.
+function cleanInterviewDate(value: string | null | undefined, timeline: string | undefined, today: string | undefined): string | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) throw new Error("Interview date must be a valid date.");
+    if (timeline !== "have_date") throw new Error('Interview date can only be set when the interview timeline is "I have a date".');
+    if (today && trimmed < today) throw new Error("Interview date can't be in the past.");
     return trimmed;
 }
 
@@ -310,7 +327,10 @@ function listOrUndefined<T>(items: T[]): T[] | undefined {
 }
 
 // Builds a patch from only the onboarding arguments that were passed.
-function buildOnboardingPatch(args: OnboardingInput): ProfilePatch {
+// `existingTimeline`/`today` are only needed to validate interviewDate: the
+// timeline it depends on may already be stored rather than part of this
+// call, and "in the past" is judged against the candidate's own local date.
+function buildOnboardingPatch(args: OnboardingInput, existingTimeline: string | undefined, today: string | undefined): ProfilePatch {
     const patch: ProfilePatch = {};
     if (args.userIntent !== undefined) patch.userIntent = args.userIntent;
     if (args.targetJobRole !== undefined) patch.targetJobRole = cleanText(args.targetJobRole, 'Target job role', MAX_SHORT_TEXT);
@@ -318,7 +338,16 @@ function buildOnboardingPatch(args: OnboardingInput): ProfilePatch {
         patch.yearsOfExperience = args.yearsOfExperience === null ? undefined : cleanYearsOfExperience(args.yearsOfExperience);
     }
     if (args.targetCompany !== undefined) patch.targetCompany = cleanText(args.targetCompany, 'Target company', MAX_SHORT_TEXT);
-    if (args.interviewTimeline !== undefined) patch.interviewTimeline = cleanText(args.interviewTimeline, 'Interview timeline', 100);
+    if (args.interviewTimeline !== undefined) {
+        patch.interviewTimeline = cleanText(args.interviewTimeline, 'Interview timeline', 100);
+        // Switching away from "have_date" clears a stale date even if the
+        // client didn't explicitly send interviewDate for this call.
+        if (patch.interviewTimeline !== 'have_date' && args.interviewDate === undefined) patch.interviewDate = undefined;
+    }
+    if (args.interviewDate !== undefined) {
+        const effectiveTimeline = args.interviewTimeline !== undefined ? patch.interviewTimeline : existingTimeline;
+        patch.interviewDate = cleanInterviewDate(args.interviewDate, effectiveTimeline, today);
+    }
     if (args.weeklyAvailability !== undefined) patch.weeklyAvailability = cleanText(args.weeklyAvailability, 'Weekly availability', 100);
     if (args.referralSource !== undefined) patch.referralSource = cleanText(args.referralSource, 'Referral source', MAX_SHORT_TEXT);
     return patch;
@@ -532,14 +561,17 @@ export const CreateProfile = mutation({
         userId: v.id('UserTable'),
         ...onboardingArgs,
         ...professionalArgs,
+        // The caller's own local "YYYY-MM-DD", only used to validate interviewDate.
+        clientToday: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
-        const { userId, ...input } = args;
+        const { userId, clientToday, ...input } = args;
         await assertCaller(ctx, userId);
         const existing = await getProfileRow(ctx, userId);
+        const existingTimeline = existing?.interviewTimeline;
         if (existing) return { profileId: existing._id, created: false };
 
-        const onboardingPatch = buildOnboardingPatch(input);
+        const onboardingPatch = buildOnboardingPatch(input, existingTimeline, clientToday);
         const patch: ProfilePatch = {
             ...onboardingPatch,
             ...(await buildProfessionalPatch(ctx, userId, input)),
@@ -580,12 +612,14 @@ export const SaveOnboarding = mutation({
         markCompleted: v.optional(v.boolean()),
         // Wizard screen to resume at (0 = intent screen, 1-5 = numbered steps).
         currentStep: v.optional(v.number()),
+        // The candidate's own local "YYYY-MM-DD", only used to validate interviewDate.
+        clientToday: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
-        const { userId, markCompleted, currentStep, ...input } = args;
+        const { userId, markCompleted, currentStep, clientToday, ...input } = args;
         await assertCaller(ctx, userId);
         const existing = await getProfileRow(ctx, userId);
-        const patch = buildOnboardingPatch(input);
+        const patch = buildOnboardingPatch(input, existing?.interviewTimeline, clientToday);
         const merged = { ...(existing ?? {}), ...patch };
         if (currentStep !== undefined) {
             if (!Number.isInteger(currentStep) || currentStep < 0 || currentStep > MAX_ONBOARDING_STEP) {

@@ -38,9 +38,7 @@ export interface ExtractedProfile {
 
 export interface ResumeImportResponse {
     extracted: ExtractedProfile;
-    // The library resume the details came from, or null for a DOCX upload.
-    // DOCX files are read but not added to the resume library, because the
-    // other library features only handle PDF.
+    // The library resume the details came from.
     resume: { id: string; fileName: string } | null;
     sourceFileName: string;
 }

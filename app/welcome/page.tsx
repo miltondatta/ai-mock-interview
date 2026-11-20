@@ -2,32 +2,34 @@
 
 import React, { useContext, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { useUser } from "@clerk/nextjs"
-import { useMutation, useQuery } from "convex/react"
+import { useSession, useUser } from "@clerk/nextjs"
+import { useQuery } from "convex/react"
 import { ArrowRight, LoaderCircle, Sparkles } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { Button } from "@/components/ui/button"
 import { PRODUCT_NAME } from "@/app/onboarding/constants"
+import { dismissProfileSetupPrompt } from "@/utils/profileSetupPrompt"
 
 // Post-signup landing (M5). Clerk's <SignUp> is pointed here with
 // forceRedirectUrl, and that's the only change to the auth flow. Profile
 // set-up is optional:
 //   - Continue to Profile Setup opens the M2 wizard (/onboarding), which
 //     resumes partial progress.
-//   - Skip for Now records the choice (DismissProfilePrompt) and goes to the
-//     dashboard, without touching onboarding or profile completion.
+//   - Skip for Now dismisses the dashboard invitation for this sign-in only
+//     (see utils/profileSetupPrompt) and goes to the dashboard, without
+//     touching onboarding or profile completion.
 // Anyone who has already finished onboarding goes straight to the
 // dashboard. /dashboard never redirects back here, so there's no loop.
 export default function WelcomePage() {
   const router = useRouter()
   const { user } = useUser()
+  const { session } = useSession()
   const { userDetail } = useContext(UserDetailContext)
   const status = useQuery(
     api.ProfessionalProfile.GetOnboardingStatus,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   )
-  const dismiss = useMutation(api.ProfessionalProfile.DismissProfilePrompt)
   const [leaving, setLeaving] = useState<"continue" | "skip" | null>(null)
   const inFlight = useRef(false)
 
@@ -47,17 +49,11 @@ export default function WelcomePage() {
     router.push("/onboarding")
   }
 
-  const onSkip = async () => {
-    if (inFlight.current || !userDetail?._id) return
+  const onSkip = () => {
+    if (inFlight.current) return
     inFlight.current = true
     setLeaving("skip")
-    try {
-      await dismiss({ userId: userDetail._id })
-    } catch (e) {
-      // Saving the skip only affects how the dashboard prompt looks, so
-      // dashboard access is never blocked on it.
-      console.error("Failed to record profile set-up skip:", e)
-    }
+    dismissProfileSetupPrompt(session?.id)
     router.replace("/dashboard")
   }
 

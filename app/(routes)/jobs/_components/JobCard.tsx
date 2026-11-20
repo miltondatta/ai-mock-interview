@@ -3,7 +3,7 @@ import { Building2, ExternalLink, MapPin, Wallet } from "lucide-react"
 import type { FunctionReturnType } from "convex/server"
 import type { api } from "@/convex/_generated/api"
 import { cn } from "@/lib/utils"
-import { applyHost, formatJobLocation, formatSalary } from "@/utils/jobs/format"
+import { applyHost, daysUntilDeadline, formatDeadline, formatJobLocation, formatSalary, CLOSING_SOON_DAYS } from "@/utils/jobs/format"
 
 export type JobItem = FunctionReturnType<typeof api.Jobs.GetJobsForUser>["jobs"][number]
 
@@ -15,6 +15,8 @@ export function JobCard({ item, compact = false }: { item: JobItem; compact?: bo
   const salary = formatSalary(job)
   const location = formatJobLocation(job)
   const source = job.source || applyHost(job.applyUrl)
+  const deadlineLabel = formatDeadline(job.applicationDeadline)
+  const closingSoon = (daysUntilDeadline(job.applicationDeadline) ?? Infinity) <= CLOSING_SOON_DAYS
 
   return (
     <article className={cn("flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-start", !compact && "sm:p-5")}>
@@ -25,6 +27,16 @@ export function JobCard({ item, compact = false }: { item: JobItem; compact?: bo
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <h3 className="text-sm font-semibold text-foreground sm:text-base">{job.title}</h3>
+          {deadlineLabel && (
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold",
+                closingSoon ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
+              )}
+            >
+              {deadlineLabel}
+            </span>
+          )}
           {match && (
             <span
               className={cn(

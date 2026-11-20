@@ -1,7 +1,7 @@
 export const RESUME_UPLOAD_LIMITS = {
   formats: "PDF",
-  maxSize: "10 MB",
-  maxBytes: 10 * 1024 * 1024,
+  maxSize: "1 MB",
+  maxBytes: 1 * 1024 * 1024,
 }
 
 // Mirrors the limits enforced by app/api/resume-match/analyze.

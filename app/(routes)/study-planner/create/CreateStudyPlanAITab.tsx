@@ -1,8 +1,8 @@
 "use client"
 
-import React, { useContext, useEffect, useState } from "react"
+import React, { useContext, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { useMutation } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import {
   Sparkles,
   Loader2,
@@ -27,6 +27,8 @@ import {
   type MilestoneDraft,
   type GeneratedPlanResponse,
 } from "./types"
+import { todayLocalDateString } from "@/utils/localDate"
+import { availabilityCapsFor, defaultStudyDays, deadlineOrPacingEstimate } from "@/utils/studyPlanner/interviewTimeline"
 
 type Stage = "form" | "generating" | "preview"
 
@@ -133,6 +135,7 @@ export function CreateStudyPlanAITab() {
   const { userDetail } = useContext(UserDetailContext)
   const userId: Id<"UserTable"> | undefined = userDetail?._id
   const createStudyPlan = useMutation(api.StudyPlanner.CreateStudyPlan)
+  const profile = useQuery(api.ProfessionalProfile.GetMyProfile, userId ? { userId } : "skip")
 
   const [subject, setSubject] = useState("")
   const [learningGoal, setLearningGoal] = useState("")
@@ -149,6 +152,41 @@ export function CreateStudyPlanAITab() {
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<PlanDraft | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // Pre-fills the form from the candidate's professional profile the first
+  // time it loads, so returning users don't retype what Profile Setup
+  // already captured. Runs once (the ref guards it) and only touches fields
+  // still at their pristine default, so it never clobbers an edit the
+  // candidate already made.
+  const appliedProfileDefaults = useRef(false)
+  useEffect(() => {
+    if (appliedProfileDefaults.current || !profile) return
+    appliedProfileDefaults.current = true
+    const today = todayLocalDateString()
+
+    if (!subject && profile.targetJobRole) setSubject(`${profile.targetJobRole} Interview Preparation`)
+
+    const years = profile.yearsOfExperience
+    if (typeof years === "number") {
+      if (years <= 2) {
+        setCurrentLevel("beginner")
+        setTargetLevel("intermediate")
+      } else if (years <= 6) {
+        setCurrentLevel("intermediate")
+        setTargetLevel("advanced")
+      } else {
+        setCurrentLevel("advanced")
+        setTargetLevel("advanced")
+      }
+    }
+
+    setStartDate(today)
+    setTargetEndDate(deadlineOrPacingEstimate(profile.interviewTimeline, profile.interviewDate, today))
+
+    const caps = availabilityCapsFor(profile.weeklyAvailability)
+    setHoursPerDay(String(caps.defaultHoursPerDay))
+    setSelectedDays(defaultStudyDays(caps.defaultDayCount))
+  }, [profile, subject])
 
   function toggleDay(day: string) {
     setSelectedDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]))
