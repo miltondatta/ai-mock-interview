@@ -41,6 +41,9 @@ import { StepIndicator } from "./StepIndicator"
 import { SelectCard } from "./SelectCard"
 import { JobTitleCombobox } from "./JobTitleCombobox"
 import { ReferralIcon } from "./ReferralIcon"
+import SavedResumePicker, { type SavedResume } from "@/app/(routes)/_components/SavedResumePicker"
+import { formFromProfile, mergeExtracted, toUpdateArgs, type ProfileFormState } from "@/app/(routes)/profile/_lib/formState"
+import type { ResumeImportResponse } from "@/utils/profile/types"
 
 export type OnboardingProfile = FunctionReturnType<typeof api.ProfessionalProfile.GetMyProfile>
 
@@ -109,6 +112,12 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
   const [resume, setResume] = useState<LinkedResume | null>(
     profile?.resume ? { id: profile.resume.id, fileName: profile.resume.fileName } : null
   )
+  // Tracks what's already saved on the professional profile (headline, skills,
+  // work experience, etc.), so linking a resume can fill in only what's still
+  // empty without re-fetching the profile. Updated after each successful
+  // resume import so uploading a second resume in the same session merges
+  // against what the first one already filled in, not a stale snapshot.
+  const [profileFields, setProfileFields] = useState<ProfileFormState>(() => formFromProfile(profile))
 
   const [busy, setBusy] = useState(false)
   const [finishing, setFinishing] = useState(false)
@@ -215,6 +224,39 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
     return saveAndGo(value === "hiring" ? STEP.referral : STEP.role, { userIntent: value })
   }
 
+  // Links a resume AND reads it, so the professional profile (headline,
+  // skills, work experience, education, summary...) is filled in from it the
+  // same way the full Profile Setup page's resume import does - onboarding
+  // has no review step, so extracted fields are saved straight away, only
+  // into whatever's still empty (mergeExtracted never overwrites a value
+  // that's already set). If extraction fails, the resume still stays linked;
+  // the candidate can fill the rest manually or retry from My Profile later.
+  async function applyResumeImport(body: FormData | { resumeId: string }) {
+    setError(null)
+    setUploading(true)
+    try {
+      const res = await fetch("/api/profile/resume-import", {
+        method: "POST",
+        ...(body instanceof FormData
+          ? { body }
+          : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+      })
+      const data = (await res.json().catch(() => ({}))) as Partial<ResumeImportResponse> & { error?: string }
+      if (!res.ok || !data.extracted) throw new Error(data.error || "We couldn't read your resume. Please try again.")
+      const { form: merged } = mergeExtracted(profileFields, data.extracted, data.sourceFileName ?? "your resume")
+      if (data.resume) {
+        merged.resumeId = data.resume.id
+        setResume({ id: data.resume.id, fileName: data.resume.fileName })
+      }
+      setProfileFields(merged)
+      await updateProfile({ userId, ...toUpdateArgs(merged) })
+    } catch (e) {
+      setError(e instanceof Error && !e.message.startsWith("[CONVEX") ? e.message : errorMessage(e, "Unable to read your resume. Please try again."))
+    } finally {
+      setUploading(false)
+    }
+  }
+
   async function uploadResume(file: File) {
     setError(null)
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -225,22 +267,14 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
       setError("Your resume must be 1 MB or smaller.")
       return
     }
-    setUploading(true)
-    try {
-      // Goes through the existing resume library (ImageKit + duplicate
-      // detection), then the library entry is linked to the profile.
-      const form = new FormData()
-      form.append("file", file)
-      const res = await fetch("/api/resume-match/upload-resume", { method: "POST", body: form })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.resumeId) throw new Error(data.error || "Unable to upload your resume. Please try again.")
-      await updateProfile({ userId, resumeId: data.resumeId })
-      setResume({ id: data.resumeId, fileName: data.fileName ?? file.name })
-    } catch (e) {
-      setError(e instanceof Error && !e.message.startsWith("[CONVEX") ? e.message : errorMessage(e, "Unable to upload your resume. Please try again."))
-    } finally {
-      setUploading(false)
-    }
+    const form = new FormData()
+    form.append("file", file)
+    await applyResumeImport(form)
+  }
+
+  async function selectExistingResume(saved: SavedResume) {
+    if (uploading || busy) return
+    await applyResumeImport({ resumeId: saved.id })
   }
 
   async function removeResume() {
@@ -488,6 +522,7 @@ export function OnboardingWizard({ userId, profile }: { userId: Id<"UserTable">;
             disabled={busy}
             onFile={uploadResume}
             onRemove={removeResume}
+            onSelectExisting={selectExistingResume}
           />
         )}
 
@@ -569,12 +604,14 @@ function ResumeStep({
   disabled,
   onFile,
   onRemove,
+  onSelectExisting,
 }: {
   resume: LinkedResume | null
   uploading: boolean
   disabled: boolean
   onFile: (file: File) => void
   onRemove: () => void
+  onSelectExisting: (resume: SavedResume) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
@@ -606,48 +643,51 @@ function ResumeStep({
           </Button>
         </div>
       ) : (
-        <div
-          role="button"
-          tabIndex={locked ? -1 : 0}
-          aria-disabled={locked}
-          aria-label="Upload your resume"
-          onClick={() => !locked && inputRef.current?.click()}
-          onKeyDown={e => {
-            if (!locked && (e.key === "Enter" || e.key === " ")) {
+        <div className="mt-3 flex flex-col gap-3">
+          <SavedResumePicker selectedId={null} onSelect={r => r && onSelectExisting(r)} disabled={locked} />
+          <div
+            role="button"
+            tabIndex={locked ? -1 : 0}
+            aria-disabled={locked}
+            aria-label="Upload your resume"
+            onClick={() => !locked && inputRef.current?.click()}
+            onKeyDown={e => {
+              if (!locked && (e.key === "Enter" || e.key === " ")) {
+                e.preventDefault()
+                inputRef.current?.click()
+              }
+            }}
+            onDragOver={e => {
               e.preventDefault()
-              inputRef.current?.click()
-            }
-          }}
-          onDragOver={e => {
-            e.preventDefault()
-            if (!locked) setDragging(true)
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={e => {
-            e.preventDefault()
-            setDragging(false)
-            if (!locked) pick(e.dataTransfer.files)
-          }}
-          className={cn(
-            "mt-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-            dragging ? "border-primary bg-primary/5" : "border-border bg-card hover:border-primary/50",
-            locked && "cursor-wait"
-          )}
-        >
-          <span className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            {uploading ? <LoaderCircle className="size-6 animate-spin" /> : <CloudUpload className="size-6" />}
-          </span>
-          <p className="mt-4 text-sm font-medium text-foreground">
-            {uploading ? "Uploading your resume…" : "Drop your resume here, or click to choose"}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">PDF Only. Maximum size 1 MB</p>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="application/pdf,.pdf"
-            className="hidden"
-            onChange={e => pick(e.target.files)}
-          />
+              if (!locked) setDragging(true)
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={e => {
+              e.preventDefault()
+              setDragging(false)
+              if (!locked) pick(e.dataTransfer.files)
+            }}
+            className={cn(
+              "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+              dragging ? "border-primary bg-primary/5" : "border-border bg-card hover:border-primary/50",
+              locked && "cursor-wait"
+            )}
+          >
+            <span className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+              {uploading ? <LoaderCircle className="size-6 animate-spin" /> : <CloudUpload className="size-6" />}
+            </span>
+            <p className="mt-4 text-sm font-medium text-foreground">
+              {uploading ? "Reading your resume…" : "Drop your resume here, or click to choose"}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">PDF Only. Maximum size 1 MB</p>
+            <input
+              ref={inputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={e => pick(e.target.files)}
+            />
+          </div>
         </div>
       )}
     </section>
