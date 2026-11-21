@@ -1,6 +1,7 @@
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import {
     PROFILE_USER_INTENT,
     profileCertificationValidator,
@@ -8,6 +9,15 @@ import {
     profileProjectValidator,
     profileWorkExperienceValidator,
 } from "./schema";
+// (D3) Personalized Job Discovery's profile-version fingerprint, reused
+// as-is from D2 rather than duplicated here - see convex/jobDiscovery.ts.
+// This does create a two-way import between this file and jobDiscovery.ts
+// (which already imports computeProfileCompletion from here), which is safe
+// specifically because both sides only ever call the other's function from
+// inside an async handler body, never at module-evaluation time - neither
+// module needs the other's export to exist yet at the moment it itself
+// finishes loading.
+import { computeProfileVersion } from "./jobDiscovery";
 
 // Professional Profile + User Onboarding backend (M1).
 //
@@ -551,6 +561,67 @@ export const GetOnboardingStatus = query({
     }
 });
 
+// --- Automatic matching refresh (D3) -----------------------------------------
+//
+// Decides whether a profile write needs its personalized job recommendations
+// (convex/jobDiscovery.ts's candidateJobMatches) refreshed, and - when the
+// matching-relevant content actually changed - folds the freshly computed
+// profileVersion into `patch` so it's saved atomically with the rest of this
+// same write (no extra round trip). Shared by CreateProfile and
+// UpdateProfile only; SaveOnboarding never calls this, because the approved
+// technical design confirmed it touches no matching-relevant field (it only
+// ever writes onboarding answers, onboardingStatus/Step, never headline/
+// skills/workExperience/etc.).
+//
+// `existing` must be the row as it was BEFORE `patch`; `patch` is mutated in
+// place (profileVersion is added only when it changed) and must still be
+// passed to upsertProfile() by the caller afterward - this function never
+// writes to the database itself.
+//
+// Returns two independent decisions, not one:
+//   - shouldRefreshMatches: rescoring against jobs that already exist.
+//   - shouldTriggerJobSearch: whether this save is the candidate's FIRST
+//     ever transition into a complete profile - the one moment an explicit
+//     outside request asked this app to also kick off a fresh external job
+//     search (Himalayas + Jobicy), rather than only rescoring against
+//     whatever jobs happen to already be sitting in the table. This fires
+//     at most once per candidate (the next transition is already complete
+//     -> still complete, never incomplete -> complete again, unless the
+//     profile regresses to incomplete and is later completed a second
+//     time) - every OTHER matching-relevant edit keeps relying solely on
+//     the existing n8n 6-hourly schedule for fresh jobs, exactly as
+//     instructed ("rest job searching trigger will be done according to
+//     the cron job").
+function decideMatchingRefresh(
+    existing: ProfileDoc | null,
+    patch: ProfilePatch
+): { shouldRefreshMatches: boolean; shouldTriggerJobSearch: boolean } {
+    const merged: Partial<ProfileDoc> = { ...(existing ?? {}), ...patch };
+    const newVersion = computeProfileVersion(merged);
+    if (newVersion === existing?.profileVersion) {
+        return { shouldRefreshMatches: false, shouldTriggerJobSearch: false }; // nothing matching-relevant changed
+    }
+
+    patch.profileVersion = newVersion;
+
+    // Schedule only when matching could actually need to change as a
+    // result: the profile becoming complete for the first time (something
+    // to generate), staying complete with different relevant data (needs
+    // rescoring), or regressing from complete to incomplete (existing
+    // candidateJobMatches rows need to be pruned - see
+    // convex/jobDiscovery.ts's own handling of an incomplete profile).
+    // When both sides are incomplete, nothing was ever generated and
+    // nothing needs to be generated now, so scheduling would be a wasted,
+    // empty run - "do not generate meaningless personalized recommendations
+    // for an incomplete profile" from the approved design.
+    const completeBefore = computeProfileCompletion(existing).isComplete;
+    const completeAfter = computeProfileCompletion(merged).isComplete;
+    return {
+        shouldRefreshMatches: completeBefore || completeAfter,
+        shouldTriggerJobSearch: !completeBefore && completeAfter,
+    };
+}
+
 // --- Mutations --------------------------------------------------------------
 
 // Creates the caller's profile. Safe to call more than once: if a row already
@@ -578,7 +649,31 @@ export const CreateProfile = mutation({
         };
         if (Object.keys(onboardingPatch).length > 0) patch.onboardingStatus = 'in_progress';
         Object.assign(patch, completionPatch(null, patch));
-        return await upsertProfile(ctx, userId, null, patch);
+        // (D3, extended) `existing` is null here (the early return above
+        // already guarantees that), so this can only ever detect "newly
+        // complete" - never a complete-to-incomplete regression, which
+        // can't happen on a brand-new row. Decided and folded into `patch`
+        // BEFORE the write, then scheduled AFTER it commits - neither the
+        // matching computation nor the external job search ever runs
+        // inside this mutation itself.
+        const { shouldRefreshMatches, shouldTriggerJobSearch } = decideMatchingRefresh(null, patch);
+        const result = await upsertProfile(ctx, userId, null, patch);
+        if (shouldTriggerJobSearch) {
+            // First-ever completion: refresh the external job pool first,
+            // then match against whatever that search actually finds -
+            // convex/jobDiscovery.ts's triggerInitialJobSearch chains the
+            // matching call itself afterward, so this intentionally does
+            // NOT also schedule refreshCandidateMatches separately here
+            // (doing both would let the fast matching call run against a
+            // still-stale pool before the slower external search finishes).
+            await ctx.scheduler.runAfter(0, internal.jobDiscovery.triggerInitialJobSearch, { userId });
+        } else if (shouldRefreshMatches) {
+            await ctx.scheduler.runAfter(0, internal.jobDiscovery.refreshCandidateMatches, {
+                userId,
+                trigger: 'profile_update',
+            });
+        }
+        return result;
     }
 });
 
@@ -596,7 +691,28 @@ export const UpdateProfile = mutation({
         const existing = await getProfileRow(ctx, userId);
         const patch = await buildProfessionalPatch(ctx, userId, input);
         Object.assign(patch, completionPatch(existing, { ...(existing ?? {}), ...patch }));
-        return await upsertProfile(ctx, userId, existing, patch);
+        // (D3, extended) Decided and folded into `patch` BEFORE the write
+        // (so the new profileVersion saves atomically with the rest of
+        // this edit), then scheduled AFTER it commits, passing only this
+        // one candidate's userId - neither the matching computation nor
+        // the external job search ever runs inside this mutation itself,
+        // so a save stays fast regardless of job-pool size.
+        const { shouldRefreshMatches, shouldTriggerJobSearch } = decideMatchingRefresh(existing, patch);
+        const result = await upsertProfile(ctx, userId, existing, patch);
+        if (shouldTriggerJobSearch) {
+            // First-ever completion via an update (e.g. a profile started
+            // through Settings > Profile rather than CreateProfile) - same
+            // reasoning as CreateProfile above: refresh the external job
+            // pool first, then match, via triggerInitialJobSearch's own
+            // chained call - never both scheduled separately here.
+            await ctx.scheduler.runAfter(0, internal.jobDiscovery.triggerInitialJobSearch, { userId });
+        } else if (shouldRefreshMatches) {
+            await ctx.scheduler.runAfter(0, internal.jobDiscovery.refreshCandidateMatches, {
+                userId,
+                trigger: 'profile_update',
+            });
+        }
+        return result;
     }
 });
 

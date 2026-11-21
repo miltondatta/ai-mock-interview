@@ -12,13 +12,17 @@ export default async function AdminJobsPage() {
   const session = await getAdminSession();
   if (!session) redirect("/admin/login");
 
-  const jobs = await getConvexClient().query(api.Jobs.AdminListJobs, { token: session.token });
+  const { jobs, activeTruncated, inactiveTruncated } = await getConvexClient().query(api.Jobs.AdminListJobs, { token: session.token });
   const active = jobs.filter((j) => j.active).length;
+  const hidden = jobs.length - active;
 
+  // "300+" rather than a flat count when a status branch hit AdminListJobs'
+  // per-status cap - otherwise these numbers would quietly understate the
+  // real total once the table holds more active or hidden jobs than that.
   const summary = [
-    { label: "Total jobs", value: String(jobs.length) },
-    { label: "Active (visible to users)", value: String(active) },
-    { label: "Hidden", value: String(jobs.length - active) },
+    { label: "Total jobs", value: `${jobs.length}${activeTruncated || inactiveTruncated ? "+" : ""}` },
+    { label: "Active (visible to users)", value: `${active}${activeTruncated ? "+" : ""}` },
+    { label: "Hidden", value: `${hidden}${inactiveTruncated ? "+" : ""}` },
   ];
 
   return (

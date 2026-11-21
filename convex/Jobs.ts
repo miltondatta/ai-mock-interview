@@ -135,12 +135,33 @@ function cleanJob(args: ObjectType<typeof jobInput>) {
 
 // --- Admin ------------------------------------------------------------------------
 
+// Capped per status (active/inactive) rather than reading the whole table.
+// With provider-synced jobs in the mix the table can hold thousands of rows,
+// some with up to ~10,000 characters of description text each, and an
+// unbounded ctx.db.query("jobs").collect() can exceed Convex's per-execution
+// read-byte limit - observed directly in production ("Too many bytes read
+// in a single function execution") right after a real Himalayas+Jobicy
+// sync pushed the table past ~2,400 rows. Each branch reuses the existing
+// by_active_posted index (no schema change), so the admin still sees the
+// most-recently-posted jobs first rather than an arbitrary/oldest-first
+// subset that a plain uncapped/unindexed take() would risk returning.
+const MAX_ADMIN_JOBS_LISTED = 300;
+
 export const AdminListJobs = query({
   args: { token: v.string() },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    const jobs = await ctx.db.query("jobs").collect();
-    return jobs.sort((a, b) => b.postedAt - a.postedAt);
+    const [active, inactive] = await Promise.all([
+      ctx.db.query("jobs").withIndex("by_active_posted", q => q.eq("active", true)).order("desc").take(MAX_ADMIN_JOBS_LISTED),
+      ctx.db.query("jobs").withIndex("by_active_posted", q => q.eq("active", false)).order("desc").take(MAX_ADMIN_JOBS_LISTED),
+    ]);
+    return {
+      jobs: [...active, ...inactive].sort((a, b) => b.postedAt - a.postedAt),
+      // Lets the admin page show "300+" instead of a flat, possibly-wrong
+      // count when a branch hit the cap - see app/admin/(protected)/jobs/page.tsx.
+      activeTruncated: active.length === MAX_ADMIN_JOBS_LISTED,
+      inactiveTruncated: inactive.length === MAX_ADMIN_JOBS_LISTED,
+    };
   },
 });
 

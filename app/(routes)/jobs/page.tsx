@@ -1,30 +1,93 @@
 "use client"
 
-import React, { useContext, useMemo, useState } from "react"
+import React, { useContext, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useQuery } from "convex/react"
 import { BriefcaseBusiness, LoaderCircle, Search, SearchX } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { MATCH_THRESHOLD } from "@/convex/jobMatching"
+import { cn } from "@/lib/utils"
+import { Pagination } from "@/components/ui/pagination"
 import { JobCard } from "./_components/JobCard"
-import { daysUntilDeadline } from "@/utils/jobs/format"
+import {
+  daysUntilDeadline,
+  EXPERIENCE_LEVELS,
+  formatLastRefreshed,
+  jobExperienceLevelIds,
+  WORK_MODE_FILTER_OPTIONS,
+  WORK_MODE_LABELS,
+  type WorkMode,
+} from "@/utils/jobs/format"
+
+const filterChipClass = (active: boolean) =>
+  cn(
+    "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+    active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"
+  )
+
+const PAGE_SIZE = 10
 
 // Jobs page (M7): every active job posted by admins (/admin/jobs). With a
 // complete profile, jobs are sorted by match score and can be filtered to
 // strong matches. Otherwise they're listed newest first with no scores.
 export default function JobsPage() {
   const { userDetail } = useContext(UserDetailContext)
-  const data = useQuery(api.Jobs.GetJobsForUser, userDetail?._id ? { userId: userDetail._id } : "skip")
+  // (D5) Read persisted recommendations first (convex/jobDiscovery.ts's
+  // GetCandidateMatches - same output shape as GetJobsForUser, so nothing
+  // below this point needs to know which one actually supplied `data`).
+  // GetJobsForUser is still subscribed in parallel from the start (so the
+  // very first render's loading state is unchanged from before D5), but
+  // once candidateData confirms it has persisted matches, its own args
+  // evaluate to "skip" on the next render and Convex drops that
+  // subscription - this candidate no longer pays for GetJobsForUser's live
+  // recomputation once persisted data is actually available, which is the
+  // whole point of the D2-D4 pipeline this page is now wired into.
+  const candidateData = useQuery(api.jobDiscovery.GetCandidateMatches, userDetail?._id ? { userId: userDetail._id } : "skip")
+  const needsLiveFallback = candidateData === undefined || !candidateData.hasPersistedMatches
+  const liveData = useQuery(api.Jobs.GetJobsForUser, userDetail?._id && needsLiveFallback ? { userId: userDetail._id } : "skip")
+  const data = candidateData?.hasPersistedMatches ? candidateData : liveData
+  const freshnessLabel = candidateData?.hasPersistedMatches ? formatLastRefreshed(candidateData.lastRefreshedAt) : null
   const [search, setSearch] = useState("")
   const [matchesOnly, setMatchesOnly] = useState(false)
   const [closingSoonFirst, setClosingSoonFirst] = useState(false)
+  // J8: work-mode and experience-level filters. Empty set = no filter
+  // active (show everything, including jobs with no reliable value for
+  // that field) - each is independent of the others and of search/sort, so
+  // clearing or changing one never resets another.
+  const [workModeFilter, setWorkModeFilter] = useState<ReadonlySet<WorkMode>>(new Set())
+  const [experienceFilter, setExperienceFilter] = useState<ReadonlySet<string>>(new Set())
+
+  const toggleWorkMode = (wm: WorkMode) =>
+    setWorkModeFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(wm)) next.delete(wm)
+      else next.add(wm)
+      return next
+    })
+  const toggleExperienceLevel = (id: string) =>
+    setExperienceFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const hasExtraFilters = workModeFilter.size > 0 || experienceFilter.size > 0
 
   const filtered = useMemo(() => {
     if (!data) return []
     const q = search.trim().toLowerCase()
     const matched = data.jobs.filter(({ job, match }) => {
       if (matchesOnly && (!match || match.score < MATCH_THRESHOLD)) return false
+      // A job with no reliable workMode/experience data is excluded while
+      // that filter is active, never guessed into a bucket it wasn't
+      // confirmed to belong to - see utils/jobs/format.ts.
+      if (workModeFilter.size > 0 && (!job.workMode || !workModeFilter.has(job.workMode))) return false
+      if (experienceFilter.size > 0) {
+        const levels = jobExperienceLevelIds(job)
+        if (levels.length === 0 || !levels.some(l => experienceFilter.has(l))) return false
+      }
       if (!q) return true
       return [job.title, job.company, job.location, ...job.requiredSkills].some(f => f?.toLowerCase().includes(q))
     })
@@ -40,7 +103,25 @@ export default function JobsPage() {
       if (db === null) return -1
       return da - db
     })
-  }, [data, search, matchesOnly, closingSoonFirst])
+  }, [data, search, matchesOnly, closingSoonFirst, workModeFilter, experienceFilter])
+
+  // Pagination: a user-driven change to search/sort/filters always jumps
+  // back to page 1 (otherwise they could land on a now-empty page); a
+  // background data change alone does not force a jump, but `currentPage`
+  // still clamps defensively so an out-of-range page never renders empty.
+  const [page, setPage] = useState(1)
+  useEffect(() => {
+    setPage(1)
+  }, [search, matchesOnly, closingSoonFirst, workModeFilter, experienceFilter])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const paginatedJobs = useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  )
+  const rangeStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1
+  const rangeEnd = Math.min(currentPage * PAGE_SIZE, filtered.length)
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 md:py-12">
@@ -54,6 +135,12 @@ export default function JobsPage() {
             ? "Sorted by how well each job matches your role, skills, experience, location and qualifications."
             : "The latest openings, newest first."}
         </p>
+        {/* (D5) Freshness indicator - only shown while actually displaying
+            persisted recommendations (never during the live GetJobsForUser
+            fallback, which isn't "generated" in the same sense). Always a
+            real Convex timestamp (candidateJobMatches.generatedAt), never a
+            hardcoded sample date. */}
+        {freshnessLabel && <p className="text-xs text-muted-foreground">{freshnessLabel}</p>}
       </div>
 
       {data && !data.personalized && data.totalActiveJobs > 0 && (
@@ -102,16 +189,67 @@ export default function JobsPage() {
             </label>
           </div>
 
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Work mode</span>
+            {WORK_MODE_FILTER_OPTIONS.map(wm => (
+              <button
+                key={wm}
+                type="button"
+                onClick={() => toggleWorkMode(wm)}
+                aria-pressed={workModeFilter.has(wm)}
+                className={filterChipClass(workModeFilter.has(wm))}
+              >
+                {WORK_MODE_LABELS[wm]}
+              </button>
+            ))}
+            {workModeFilter.size > 0 && (
+              <button type="button" onClick={() => setWorkModeFilter(new Set())} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+                Clear
+              </button>
+            )}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Experience</span>
+            {EXPERIENCE_LEVELS.map(level => (
+              <button
+                key={level.id}
+                type="button"
+                onClick={() => toggleExperienceLevel(level.id)}
+                aria-pressed={experienceFilter.has(level.id)}
+                className={filterChipClass(experienceFilter.has(level.id))}
+              >
+                {level.label}
+              </button>
+            ))}
+            {experienceFilter.size > 0 && (
+              <button type="button" onClick={() => setExperienceFilter(new Set())} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+                Clear
+              </button>
+            )}
+          </div>
+
           {filtered.length === 0 ? (
             <div className="mt-8 flex flex-col items-center px-6 py-12 text-center">
               <SearchX className="size-8 text-muted-foreground" />
               <p className="mt-3 font-medium text-foreground">No jobs match your filters</p>
-              <p className="mt-1 text-sm text-muted-foreground">Try a different search{matchesOnly ? " or show all jobs" : ""}.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Try a different search{matchesOnly || hasExtraFilters ? ", or clear some filters" : ""}.
+              </p>
             </div>
           ) : (
-            <div className="mt-5 flex flex-col gap-3">
-              {filtered.map(item => <JobCard key={item.job._id} item={item} />)}
-            </div>
+            <>
+              <div className="mt-5 flex flex-col gap-3">
+                {paginatedJobs.map(item => <JobCard key={item.job._id} item={item} />)}
+              </div>
+              <Pagination
+                page={currentPage}
+                pageCount={pageCount}
+                onPageChange={setPage}
+                summary={`Showing ${rangeStart}–${rangeEnd} of ${filtered.length}`}
+                className="mt-6"
+              />
+            </>
           )}
         </>
       )}

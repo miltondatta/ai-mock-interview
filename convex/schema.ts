@@ -263,13 +263,21 @@ export default defineSchema({
       profileCompleted: v.optional(v.boolean()),
       profileCompletedAt: v.optional(v.number()),
       createdAt: v.optional(v.number()),
+
+      // (D1 - Personalized Job Discovery, schema groundwork only) Hash of
+      // exactly the matching-relevant fields on this row (see
+      // PERSONALIZED_JOB_DISCOVERY_TECHNICAL_DESIGN.md section 3) as of the
+      // last time candidateJobMatches was generated for this user. Nothing
+      // writes or reads this yet - no trigger exists in this milestone.
+      profileVersion: v.optional(v.string()),
     })
       .index('by_user', ['userId']),
 
-    // Jobs module (M7): job openings posted by admins from /admin/jobs. There's
-    // no external job API. Every listing is entered by an admin, so nothing is
-    // invented. Users see active rows on /jobs and in the dashboard's
-    // "Jobs for you" (convex/Jobs.ts, matching in convex/jobMatching.ts).
+    // Jobs module (M7): job openings posted by admins from /admin/jobs, plus
+    // (J2 schema groundwork only - no fetching/ingestion yet) room for
+    // listings sourced from external providers later. Users see active rows
+    // on /jobs and in the dashboard's "Jobs for you" (convex/Jobs.ts,
+    // matching in convex/jobMatching.ts).
     jobs: defineTable({
       title: v.string(),
       company: v.string(),
@@ -282,6 +290,9 @@ export default defineSchema({
       salaryPeriod: v.optional(v.union(v.literal('hour'), v.literal('month'), v.literal('year'))),
       description: v.optional(v.string()),
       requiredSkills: v.array(v.string()),
+      // (J2) Not yet populated by anything - reserved for providers that
+      // distinguish "required" from "nice to have" skills.
+      preferredSkills: v.optional(v.array(v.string())),
       minYearsExperience: v.optional(v.number()),
       maxYearsExperience: v.optional(v.number()),
       // Free text, e.g. "Bachelor's in Computer Science".
@@ -296,8 +307,124 @@ export default defineSchema({
       active: v.boolean(),
       postedAt: v.number(),
       updatedAt: v.number(),
+
+      // --- External-provider fields (J2 schema groundwork only) --------------
+      // Absent on every row today. Nothing yet writes these - no ingestion,
+      // no sync action exists in this milestone. Once a sync does exist,
+      // absent/undefined `provider` on an older row means "internal"
+      // (admin-managed), the same as it already implicitly does today.
+      provider: v.optional(
+        v.union(v.literal('internal'), v.literal('himalayas'), v.literal('jobicy'), v.literal('remotive'))
+      ),
+      // The provider's own id/guid/slug for this listing. Only set together
+      // with `provider` when `provider` isn't "internal".
+      externalId: v.optional(v.string()),
+      // Canonical provider listing page, for the attribution link each
+      // provider's terms require.
+      sourceUrl: v.optional(v.string()),
+      companyLogo: v.optional(v.string()),
+      // ISO-ish country/region, kept separate from the free-text `location`
+      // field above so provider geo filters (e.g. Himalayas `country`,
+      // Jobicy `jobGeo`) have somewhere to land unchanged.
+      country: v.optional(v.string()),
+      // Last time a sync pass observed this listing still present/open
+      // upstream. Unset for admin-entered rows.
+      lastFetchedAt: v.optional(v.number()),
+      // Cross-provider duplicate-detection key (see JOB_SEARCH_TECHNICAL_DESIGN.md
+      // section 7). Unset until a normalization step computes it.
+      dedupeKey: v.optional(v.string()),
+      // Set when a sync pass notices a previously-seen provider listing is no
+      // longer present upstream. Distinct from the admin's own `active`
+      // toggle, which remains the only thing admins control directly.
+      removedUpstreamAt: v.optional(v.number()),
     })
-      .index('by_active_posted', ['active', 'postedAt']),
+      .index('by_active_posted', ['active', 'postedAt'])
+      // (J2) For a future sync to look up "do we already have this provider's
+      // listing?" before inserting a duplicate. Unused until that sync exists.
+      .index('by_provider_external_id', ['provider', 'externalId'])
+      // (J2) For a future cross-provider duplicate check. Unused until a
+      // normalization step starts populating dedupeKey.
+      .index('by_dedupe_key', ['dedupeKey']),
+
+    // (J2) Audit trail for future external job synchronization runs (one row
+    // per provider per sync pass). Nothing writes to this table yet - no
+    // sync action exists in this milestone. See JOB_SEARCH_TECHNICAL_DESIGN.md
+    // section 4 and JOB_SEARCH_IMPLEMENTATION_ROADMAP.md Milestone 5.
+    jobSyncRuns: defineTable({
+      provider: v.string(),
+      startedAt: v.number(),
+      finishedAt: v.optional(v.number()),
+      status: v.union(v.literal('running'), v.literal('success'), v.literal('partial'), v.literal('failed')),
+      jobsFetched: v.optional(v.number()),
+      jobsInserted: v.optional(v.number()),
+      jobsUpdated: v.optional(v.number()),
+      jobsExpired: v.optional(v.number()),
+      errorMessage: v.optional(v.string()),
+    })
+      .index('by_provider_started', ['provider', 'startedAt']),
+
+    // (D1 - Personalized Job Discovery schema groundwork only) One row per
+    // (candidate, job) recommendation. Nothing writes or reads this table
+    // yet - no matching function, trigger, or query exists in this
+    // milestone. See PERSONALIZED_JOB_DISCOVERY_TECHNICAL_DESIGN.md section 2
+    // and PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_ROADMAP.md Milestone D1.
+    // Deliberately holds no candidate-profile data (only a `userId`
+    // reference) and never touches the referenced `jobs` row - the original
+    // job record and the candidate's profile both stay the single source of
+    // truth.
+    candidateJobMatches: defineTable({
+      userId: v.id('UserTable'),
+      jobId: v.id('jobs'),
+      // Everything below is exactly what convex/jobMatching.ts's matchJob()
+      // already returns today (MatchResult) - no new scoring concept.
+      matchScore: v.number(),
+      isMatch: v.boolean(),
+      matchedSkills: v.array(v.string()),
+      missingSkills: v.array(v.string()),
+      matchReasons: v.array(v.string()),
+      // The UserProfileTable.profileVersion this row was computed against -
+      // lets a future refresh detect "already correct for this profile"
+      // without recomputing. Not a generic updatedAt comparison (see the
+      // technical design doc for why).
+      profileVersion: v.string(),
+      generatedAt: v.number(),
+      // Cache hint only - the referenced job's own `active`/
+      // `applicationDeadline` remain authoritative and must still be
+      // re-checked at read time (see technical design section 7). Never the
+      // sole source of truth for whether a recommendation is still valid.
+      status: v.union(v.literal('active'), v.literal('stale'), v.literal('removed')),
+      lastUpdatedAt: v.number(),
+    })
+      .index('by_user', ['userId'])
+      .index('by_user_status', ['userId', 'status'])
+      // Upsert key - every write path (future milestones) is expected to go
+      // through this index to guarantee one recommendation row per
+      // (candidate, job) pair.
+      .index('by_user_job', ['userId', 'jobId'])
+      // Lets a future cleanup pass find every match row for a job that's
+      // being deactivated/removed, without a full table scan.
+      .index('by_job', ['jobId']),
+
+    // (D1 - Personalized Job Discovery schema groundwork only) Audit trail
+    // for future candidate-matching runs (profile-triggered or the daily
+    // cycle), mirroring jobSyncRuns' own shape/conventions for a separate
+    // subsystem. Nothing writes to this table yet - no matching trigger or
+    // scheduled function exists in this milestone. See
+    // PERSONALIZED_JOB_DISCOVERY_TECHNICAL_DESIGN.md section 8.
+    candidateMatchRuns: defineTable({
+      trigger: v.union(v.literal('profile_update'), v.literal('daily_cycle')),
+      // Set only when trigger === "profile_update" (one candidate); left
+      // unset for a "daily_cycle" run, which spans every candidate.
+      userId: v.optional(v.id('UserTable')),
+      startedAt: v.number(),
+      finishedAt: v.optional(v.number()),
+      status: v.union(v.literal('running'), v.literal('success'), v.literal('partial'), v.literal('failed')),
+      candidatesProcessed: v.optional(v.number()),
+      matchesWritten: v.optional(v.number()),
+      matchesPruned: v.optional(v.number()),
+      errorMessage: v.optional(v.string()),
+    })
+      .index('by_trigger_started', ['trigger', 'startedAt']),
 
     // Practice Coach: one row per "Generate Video" call, recording what was sent
     // to the N8N webhook and the response it returned.

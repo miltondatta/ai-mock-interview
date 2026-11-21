@@ -52,3 +52,6 @@ docker*
 vlc-help.txt
 prof_images/
 issue/
+n8n/
+JOB_*
+PERSONALIZED_*

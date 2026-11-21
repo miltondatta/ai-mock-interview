@@ -7,12 +7,17 @@ import { BriefcaseBusiness, ChevronRight } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { JobCard } from "@/app/(routes)/jobs/_components/JobCard"
+import { formatLastRefreshed } from "@/utils/jobs/format"
 
 const DASHBOARD_LIMIT = 3
 
-// Dashboard "Jobs for you" (M7). Data comes from Convex GetJobsForUser, which
-// is reactive and cached server-side. It recomputes only when the jobs or the
-// user's profile change, so a profile edit refreshes it automatically.
+// Dashboard "Jobs for you" (M7, read path updated in D5). Data comes from
+// Convex - either persisted recommendations (convex/jobDiscovery.ts's
+// GetCandidateMatches, kept fresh by D3's profile-save trigger and D4's
+// daily cron) when available, or the original live-scored GetJobsForUser
+// otherwise - see candidateData/liveData below. Both are reactive, so a
+// profile edit or a job becoming inactive still refreshes this section
+// automatically either way.
 //   - Profile complete: up to 3 jobs above the match threshold, with scores
 //     and reasons, under "Jobs for you".
 //   - Profile incomplete: the M6 invitation (ProfileSetupPrompt) is shown
@@ -21,10 +26,21 @@ const DASHBOARD_LIMIT = 3
 //   - No jobs, or no matches: an honest empty state. Nothing is invented.
 export default function JobsForYou() {
   const { userDetail } = useContext(UserDetailContext)
-  const data = useQuery(
-    api.Jobs.GetJobsForUser,
+  // (D5) Same pattern as app/(routes)/jobs/page.tsx: both queries start
+  // together so the first render's loading behavior is unchanged, but
+  // GetJobsForUser's subscription is dropped (args become "skip") once
+  // candidateData confirms persisted matches exist.
+  const candidateData = useQuery(
+    api.jobDiscovery.GetCandidateMatches,
     userDetail?._id ? { userId: userDetail._id, limit: DASHBOARD_LIMIT, matchesOnly: true } : "skip"
   )
+  const needsLiveFallback = candidateData === undefined || !candidateData.hasPersistedMatches
+  const liveData = useQuery(
+    api.Jobs.GetJobsForUser,
+    userDetail?._id && needsLiveFallback ? { userId: userDetail._id, limit: DASHBOARD_LIMIT, matchesOnly: true } : "skip"
+  )
+  const data = candidateData?.hasPersistedMatches ? candidateData : liveData
+  const freshnessLabel = candidateData?.hasPersistedMatches ? formatLastRefreshed(candidateData.lastRefreshedAt) : null
 
   if (!data) return null
 
@@ -46,6 +62,10 @@ export default function JobsForYou() {
       {!personalized && data.totalActiveJobs > 0 && (
         <p className="mt-1 text-sm text-muted-foreground">Complete your profile to see jobs matched to your skills and experience.</p>
       )}
+      {/* (D5) Only shown while actually displaying persisted recommendations,
+          never during the live GetJobsForUser fallback. Always a real
+          Convex timestamp, never hardcoded. */}
+      {freshnessLabel && <p className="mt-1 text-xs text-muted-foreground">{freshnessLabel}</p>}
 
       {data.totalActiveJobs === 0 ? (
         <p className="mt-4 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">

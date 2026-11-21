@@ -1,9 +1,9 @@
-import React from "react"
+import React, { useState } from "react"
 import { Building2, ExternalLink, MapPin, Wallet } from "lucide-react"
 import type { FunctionReturnType } from "convex/server"
 import type { api } from "@/convex/_generated/api"
 import { cn } from "@/lib/utils"
-import { applyHost, daysUntilDeadline, formatDeadline, formatJobLocation, formatSalary, CLOSING_SOON_DAYS } from "@/utils/jobs/format"
+import { daysUntilDeadline, formatDeadline, formatJobLocation, formatSalary, stripHtmlToText, CLOSING_SOON_DAYS } from "@/utils/jobs/format"
 
 export type JobItem = FunctionReturnType<typeof api.Jobs.GetJobsForUser>["jobs"][number]
 
@@ -14,15 +14,31 @@ export function JobCard({ item, compact = false }: { item: JobItem; compact?: bo
   const { job, match } = item
   const salary = formatSalary(job)
   const location = formatJobLocation(job)
-  const source = job.source || applyHost(job.applyUrl)
   const deadlineLabel = formatDeadline(job.applicationDeadline)
   const closingSoon = (daysUntilDeadline(job.applicationDeadline) ?? Infinity) <= CLOSING_SOON_DAYS
+  // J8: show the company's logo when one was supplied (admin-entered or
+  // provider-sourced); fall back to the existing initial-letter avatar on a
+  // missing URL or a failed/broken image load, so a bad logo link never
+  // shows a broken-image icon or shifts the layout.
+  const [logoFailed, setLogoFailed] = useState(false)
+  const showLogo = !!job.companyLogo && !logoFailed
 
   return (
     <article className={cn("flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-start", !compact && "sm:p-5")}>
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary" aria-hidden>
-        {job.company.trim().charAt(0).toUpperCase() || "?"}
-      </span>
+      {showLogo ? (
+        <img
+          src={job.companyLogo}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setLogoFailed(true)}
+          className="size-10 shrink-0 rounded-lg border border-border bg-muted object-contain p-1"
+        />
+      ) : (
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary" aria-hidden>
+          {job.company.trim().charAt(0).toUpperCase() || "?"}
+        </span>
+      )}
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
@@ -66,7 +82,7 @@ export function JobCard({ item, compact = false }: { item: JobItem; compact?: bo
         )}
 
         {!compact && job.description && (
-          <p className="mt-2 line-clamp-3 text-sm whitespace-pre-line text-muted-foreground">{job.description}</p>
+          <p className="mt-2 line-clamp-3 text-sm whitespace-pre-line text-muted-foreground">{stripHtmlToText(job.description)}</p>
         )}
 
         {!compact && job.requiredSkills.length > 0 && (
@@ -99,7 +115,14 @@ export function JobCard({ item, compact = false }: { item: JobItem; compact?: bo
         >
           Apply <ExternalLink className="size-3.5" />
         </a>
-        {source && <span className="text-xs text-muted-foreground">via {source}</span>}
+        {/* (Explicit request) Provider/source attribution ("via Himalayas"/
+            "via Jobicy") is intentionally not rendered - previously a
+            subtle badge here (J3/J8), removed on direct instruction. Note
+            left for anyone revisiting this: Himalayas' and Jobicy's own
+            terms had asked for a visible link back to the original
+            listing, not just the apply link, so removing it is a
+            deliberate product/compliance trade-off the project owner
+            chose, not an oversight. */}
       </div>
     </article>
   )

@@ -2,14 +2,17 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ExternalLink, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Pagination } from "@/components/ui/pagination";
 import { formatJobLocation, formatSalary } from "@/utils/jobs/format";
 import { formatDate } from "../../_lib/format";
 
 // Admin CRUD for job openings, modelled on PlansManager.
+
+const JOBS_PER_PAGE = 15;
 
 type WorkMode = "onsite" | "remote" | "hybrid";
 type SalaryPeriod = "hour" | "month" | "year";
@@ -125,6 +128,17 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Manual provider sync (J3 Himalayas, J5 Jobicy). No schedule - each only
+  // runs when its own button is clicked.
+  const [syncingProvider, setSyncingProvider] = useState<"himalayas" | "jobicy" | null>(null);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  // Pagination over the (already server-capped, see convex/Jobs.ts
+  // AdminListJobs) job list. `currentPage` clamps automatically if the list
+  // shrinks (e.g. after a delete) rather than needing a reset effect, so
+  // routine edits/refreshes don't unexpectedly bounce the admin back to
+  // page 1.
+  const [page, setPage] = useState(1);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => (d ? { ...d, [key]: value } : d));
 
@@ -156,6 +170,41 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
     }
   };
 
+  // Manual trigger shared by both provider adapters (convex/himalayasSync.ts,
+  // convex/jobicy.ts). Admin-gated by the same session cookie as every other
+  // call on this page. Jobicy's own backend action additionally enforces a
+  // once-per-hour cooldown between runs - a rejection surfaces here as an
+  // ordinary error message, same as any other failure.
+  const sync = async (provider: "himalayas" | "jobicy", endpoint: string, label: string) => {
+    if (syncingProvider) return;
+    setSyncError(null);
+    setSyncMessage(null);
+    setSyncingProvider(provider);
+    try {
+      const res = await fetch(endpoint, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSyncError(data?.error || `Could not sync ${label} jobs.`);
+        return;
+      }
+      setSyncMessage(
+        `${label} sync ${data.status}: ${data.jobsInserted} new, ${data.jobsUpdated} updated` +
+          (data.jobsExpired ? `, ${data.jobsExpired} closed` : "") +
+          (data.skipped ? `, ${data.skipped} skipped` : "") +
+          (data.error ? ` (${data.error})` : "")
+      );
+      router.refresh();
+    } catch {
+      setSyncError(`Could not reach the ${label} sync endpoint.`);
+    } finally {
+      setSyncingProvider(null);
+    }
+  };
+
+  const pageCount = Math.max(1, Math.ceil(initialJobs.length / JOBS_PER_PAGE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleJobs = initialJobs.slice((currentPage - 1) * JOBS_PER_PAGE, currentPage * JOBS_PER_PAGE);
+
   const remove = async (id: string) => {
     if (!confirm("Delete this job? Users will no longer see it. This cannot be undone.")) return;
     setDeletingId(id);
@@ -176,11 +225,27 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
       <div className="flex items-center justify-between border-b border-border p-4">
         <h3 className="text-sm font-semibold">Job openings</h3>
         {!draft && (
-          <Button size="sm" onClick={() => { setError(null); setDraft(emptyDraft()); }}>
-            <Plus /> Add job
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => sync("himalayas", "/api/admin/jobs/sync", "Himalayas")} disabled={!!syncingProvider}>
+              {syncingProvider === "himalayas" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {syncingProvider === "himalayas" ? "Syncing…" : "Sync Himalayas"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => sync("jobicy", "/api/admin/jobs/sync-jobicy", "Jobicy")} disabled={!!syncingProvider}>
+              {syncingProvider === "jobicy" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {syncingProvider === "jobicy" ? "Syncing…" : "Sync Jobicy"}
+            </Button>
+            <Button size="sm" onClick={() => { setError(null); setDraft(emptyDraft()); }}>
+              <Plus /> Add job
+            </Button>
+          </div>
         )}
       </div>
+
+      {(syncMessage || syncError) && !draft && (
+        <p className={`px-4 py-2 text-sm ${syncError ? "bg-destructive/10 text-destructive" : "bg-muted/50 text-muted-foreground"}`}>
+          {syncError || syncMessage}
+        </p>
+      )}
 
       {draft && (
         <form onSubmit={save} className="flex flex-col gap-4 border-b border-border bg-muted/30 p-4">
@@ -295,7 +360,7 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
             No jobs yet. Add one to start showing &quot;Jobs for you&quot; to users.
           </li>
         )}
-        {initialJobs.map((job) => {
+        {visibleJobs.map((job) => {
           const salary = formatSalary(job);
           const location = formatJobLocation(job);
           return (
@@ -336,6 +401,17 @@ export default function JobsManager({ initialJobs }: { initialJobs: Job[] }) {
           );
         })}
       </ul>
+
+      {initialJobs.length > 0 && (
+        <div className="border-t border-border p-4">
+          <Pagination
+            page={currentPage}
+            pageCount={pageCount}
+            onPageChange={setPage}
+            summary={`Showing ${(currentPage - 1) * JOBS_PER_PAGE + 1}–${Math.min(currentPage * JOBS_PER_PAGE, initialJobs.length)} of ${initialJobs.length} jobs`}
+          />
+        </div>
+      )}
     </div>
   );
 }
