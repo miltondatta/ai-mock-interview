@@ -232,3 +232,19 @@ export const AdminSyncJobicy = action({
     return await syncJobicy(ctx);
   },
 });
+
+// --- Public action: the "Check for New Jobs" trigger on /jobs -----------------------
+
+// Any-signed-in-user trigger for the "Check for New Jobs" button on the
+// user-facing /jobs page (see convex/himalayasSync.ts's UserSyncHimalayas
+// for the matching counterpart and app/api/jobs/check-new/route.ts, the
+// only caller, which gates on a logged-in Clerk session). Reuses
+// syncJobicy() exactly as AdminSyncJobicy does, including its existing
+// once-per-hour MIN_SYNC_INTERVAL_MS cooldown - already global per
+// provider, not admin-specific, so no separate cooldown is needed here.
+export const UserSyncJobicy = action({
+  args: {},
+  handler: async (ctx): Promise<ProviderSyncResult> => {
+    return await syncJobicy(ctx);
+  },
+});

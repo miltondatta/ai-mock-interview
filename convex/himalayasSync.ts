@@ -16,6 +16,12 @@ import { runProviderSync, type ProviderSyncResult } from "./jobSyncRunner";
 // (provider, externalId) so admin-created rows can never be matched or
 // overwritten by this sync.
 
+// Cooldown applied only to the user-facing "Check for New Jobs" trigger
+// (UserSyncHimalayas below) - Himalayas itself documents no rate limit, and
+// AdminSyncHimalayas stays uncapped as before, but this sync is no longer
+// admin-only, so any signed-in user clicking repeatedly needs a floor.
+const USER_MIN_SYNC_INTERVAL_MS = 30 * 60 * 1000;
+
 const PROVIDER = "himalayas" as const;
 const API_URL = "https://himalayas.app/jobs/api";
 // Himalayas' own docs: browse `limit` max is 20 per request, and the feed
@@ -199,9 +205,10 @@ async function fetchHimalayasPage(cursor: string | undefined): Promise<{ jobs: u
 // the HTTP gateway reuses this exact function rather than reconstructing
 // the sync options, per J7 Phase 2's "do not duplicate synchronization
 // logic in the HTTP gateway."
-export async function syncHimalayas(ctx: ActionCtx): Promise<ProviderSyncResult> {
+export async function syncHimalayas(ctx: ActionCtx, minIntervalMs?: number): Promise<ProviderSyncResult> {
   return await runProviderSync(ctx, {
     provider: PROVIDER,
+    minIntervalMs,
     maxPages: MAX_PAGES,
     pageDelayMs: PAGE_DELAY_MS,
     fetchPage: fetchHimalayasPage,
@@ -225,5 +232,22 @@ export const AdminSyncHimalayas = action({
     const session = await ctx.runQuery(api.admin.VerifySession, { token: args.token });
     if (!session) throw new Error("Unauthorized");
     return await syncHimalayas(ctx);
+  },
+});
+
+// --- Public action: the "Check for New Jobs" trigger on /jobs -----------------------
+
+// Any-signed-in-user trigger for the "Check for New Jobs" button on the
+// user-facing /jobs page. The caller (app/api/jobs/check-new/route.ts)
+// already checks for a logged-in Clerk session before reaching here, the
+// same way app/api/resumes/route.ts gates its own user-facing endpoint -
+// this has no per-user scoping of its own since a job sync affects the
+// shared `jobs` table, not any one candidate's data. Unlike
+// AdminSyncHimalayas above, this applies USER_MIN_SYNC_INTERVAL_MS so the
+// button can't be used to hammer the Himalayas API.
+export const UserSyncHimalayas = action({
+  args: {},
+  handler: async (ctx): Promise<ProviderSyncResult> => {
+    return await syncHimalayas(ctx, USER_MIN_SYNC_INTERVAL_MS);
   },
 });

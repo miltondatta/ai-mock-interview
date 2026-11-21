@@ -239,13 +239,32 @@ function PasswordSection({ user }: { user: ClerkUser }) {
   )
 }
 
+function deviceLabel(session: ClerkSessionWithActivities): string {
+  const activity = session.latestActivity
+  return [activity?.browserName, activity?.deviceType].filter(Boolean).join(" on ") || "Unknown device"
+}
+
 function ActiveSessions({ user }: { user: ClerkUser }) {
   const { session: currentSession } = useSession()
   const [sessions, setSessions] = useState<ClerkSessionWithActivities[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [revokingId, setRevokingId] = useState<string | null>(null)
+  // Plain confirm dialog for passwordless (e.g. Google) accounts - see
+  // performRevoke below for why this replaces Clerk's own reverification
+  // popup only in that case.
+  const [confirmSession, setConfirmSession] = useState<ClerkSessionWithActivities | null>(null)
 
-  const revokeSession = useReverification((session: ClerkSessionWithActivities) => session.revoke())
+  // Clerk treats revoking a session as a sensitive action and, by default,
+  // intercepts it with its own "Verification required" popup asking for the
+  // account's password before continuing (see issue/issue08.png). That
+  // popup is a dead end for an account that signed up via Google and has no
+  // password set (user.passwordEnabled is false) - there is nothing to type
+  // in it. So this is only used for accounts that actually have a password;
+  // a passwordless account instead calls app/api/account/sessions/revoke
+  // (performRevoke below), a backend-API route that revokes the session
+  // directly and never goes through Clerk's frontend reverification flow at
+  // all, after a plain yes/no confirm dialog (see onRevokeClick).
+  const revokeWithReverification = useReverification((session: ClerkSessionWithActivities) => session.revoke())
 
   const loadSessions = useCallback(async () => {
     try {
@@ -261,17 +280,46 @@ function ActiveSessions({ user }: { user: ClerkUser }) {
     loadSessions()
   }, [loadSessions])
 
-  const onRevoke = async (session: ClerkSessionWithActivities) => {
+  const performRevoke = async (session: ClerkSessionWithActivities) => {
     setError(null)
     setRevokingId(session.id)
     try {
-      await revokeSession(session)
+      if (user.passwordEnabled) {
+        await revokeWithReverification(session)
+      } else {
+        const res = await fetch("/api/account/sessions/revoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: session.id }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          setError(data?.error || "Unable to sign out that device. Please try again.")
+          return
+        }
+      }
       await loadSessions()
     } catch (err) {
       setError(getClerkErrorMessage(err, "Unable to sign out that device. Please try again."))
     } finally {
       setRevokingId(null)
     }
+  }
+
+  // Password accounts keep Clerk's own reverification popup (unchanged
+  // behavior); passwordless accounts get our own confirm dialog instead.
+  const onRevokeClick = (session: ClerkSessionWithActivities) => {
+    if (user.passwordEnabled) {
+      performRevoke(session)
+    } else {
+      setConfirmSession(session)
+    }
+  }
+
+  const onConfirmRevoke = async () => {
+    const session = confirmSession
+    setConfirmSession(null)
+    if (session) await performRevoke(session)
   }
 
   return (
@@ -291,7 +339,7 @@ function ActiveSessions({ user }: { user: ClerkUser }) {
             const activity = session.latestActivity
             const isCurrent = session.id === currentSession?.id
             const DeviceIcon = activity?.isMobile ? Smartphone : Monitor
-            const deviceName = [activity?.browserName, activity?.deviceType].filter(Boolean).join(" on ") || "Unknown device"
+            const deviceName = deviceLabel(session)
             const place = [activity?.city, activity?.country].filter(Boolean).join(", ")
             return (
               <div key={session.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
@@ -314,7 +362,7 @@ function ActiveSessions({ user }: { user: ClerkUser }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => onRevoke(session)}
+                    onClick={() => onRevokeClick(session)}
                     disabled={revokingId === session.id}
                     className="shrink-0"
                   >
@@ -328,6 +376,27 @@ function ActiveSessions({ user }: { user: ClerkUser }) {
         </div>
       )}
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+
+      <Dialog open={!!confirmSession} onOpenChange={(next) => !next && setConfirmSession(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign out this device?</DialogTitle>
+            <DialogDescription>
+              {confirmSession &&
+                `This signs "${deviceLabel(confirmSession)}" out of your account. It can sign back in again anytime.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setConfirmSession(null)} disabled={!!revokingId}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" onClick={onConfirmRevoke} disabled={!!revokingId}>
+              {revokingId && <Loader2 className="animate-spin" />}
+              Sign out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Section>
   )
 }

@@ -3,11 +3,12 @@
 import React, { useContext, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useQuery } from "convex/react"
-import { BriefcaseBusiness, LoaderCircle, Search, SearchX } from "lucide-react"
+import { BriefcaseBusiness, LoaderCircle, RefreshCw, Search, SearchX } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
 import { MATCH_THRESHOLD } from "@/convex/jobMatching"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import { Pagination } from "@/components/ui/pagination"
 import { JobCard, type JobItem } from "./_components/JobCard"
 import {
@@ -65,6 +66,38 @@ export default function JobsPage() {
   // clearing or changing one never resets another.
   const [workModeFilter, setWorkModeFilter] = useState<ReadonlySet<WorkMode>>(new Set())
   const [experienceFilter, setExperienceFilter] = useState<ReadonlySet<string>>(new Set())
+
+  // Manual "Check for New Jobs" trigger (calls app/api/jobs/check-new,
+  // which runs both provider syncs). The job list itself is a live Convex
+  // query, so a successful sync shows up here on its own - no refetch call
+  // needed once it finishes.
+  const [checkingJobs, setCheckingJobs] = useState(false)
+  const [checkMessage, setCheckMessage] = useState<string | null>(null)
+  const [checkError, setCheckError] = useState<string | null>(null)
+
+  const checkForNewJobs = async () => {
+    if (checkingJobs) return
+    setCheckingJobs(true)
+    setCheckMessage(null)
+    setCheckError(null)
+    try {
+      const res = await fetch("/api/jobs/check-new", { method: "POST" })
+      const result = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setCheckError(result?.error || "Could not check for new jobs.")
+        return
+      }
+      const parts = [`${result.jobsInserted ?? 0} new`, `${result.jobsUpdated ?? 0} updated`]
+      if (result.jobsExpired) parts.push(`${result.jobsExpired} closed`)
+      setCheckMessage(
+        `Done - ${parts.join(", ")}.${result.errors?.length ? ` (${result.errors.join(" ")})` : ""}`
+      )
+    } catch {
+      setCheckError("Could not reach the server. Please try again.")
+    } finally {
+      setCheckingJobs(false)
+    }
+  }
 
   const toggleWorkMode = (wm: WorkMode) =>
     setWorkModeFilter(prev => {
@@ -133,23 +166,40 @@ export default function JobsPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 md:py-12">
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-muted-foreground">Jobs</p>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
-          {data?.personalized ? "Jobs matched to your profile" : "Job openings"}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {data?.personalized
-            ? "Sorted by how well each job matches your role, skills, experience, location and qualifications."
-            : "The latest openings, newest first."}
-        </p>
-        {/* (D5) Freshness indicator - only shown while actually displaying
-            persisted recommendations (never during the live GetJobsForUser
-            fallback, which isn't "generated" in the same sense). Always a
-            real Convex timestamp (candidateJobMatches.generatedAt), never a
-            hardcoded sample date. */}
-        {freshnessLabel && <p className="text-xs text-muted-foreground">{freshnessLabel}</p>}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-medium text-muted-foreground">Jobs</p>
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+            {data?.personalized ? "Jobs matched to your profile" : "Job openings"}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {data?.personalized
+              ? "Sorted by how well each job matches your role, skills, experience, location and qualifications."
+              : "The latest openings, newest first."}
+          </p>
+          {/* (D5) Freshness indicator - only shown while actually displaying
+              persisted recommendations (never during the live GetJobsForUser
+              fallback, which isn't "generated" in the same sense). Always a
+              real Convex timestamp (candidateJobMatches.generatedAt), never a
+              hardcoded sample date. */}
+          {freshnessLabel && <p className="text-xs text-muted-foreground">{freshnessLabel}</p>}
+        </div>
+        <Button size="sm" onClick={checkForNewJobs} disabled={checkingJobs} className="shrink-0">
+          <RefreshCw className={cn(checkingJobs && "animate-spin")} />
+          {checkingJobs ? "Checking…" : "Check for New Jobs"}
+        </Button>
       </div>
+
+      {(checkMessage || checkError) && (
+        <p
+          className={cn(
+            "mt-3 rounded-lg px-3 py-2 text-sm",
+            checkError ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"
+          )}
+        >
+          {checkError || checkMessage}
+        </p>
+      )}
 
       {data && !data.personalized && data.totalActiveJobs > 0 && (
         <div className="mt-6 flex flex-col gap-3 rounded-xl border border-primary/25 bg-primary/5 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
