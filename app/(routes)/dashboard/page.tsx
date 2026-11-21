@@ -12,13 +12,21 @@ import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
 import { useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
+import type { Doc } from '@/convex/_generated/dataModel';
 import { UserDetailContext } from '@/context/UserDetailContext';
 
 function Dashboard() {
   const {user} = useUser();
   const {userDetail} = useContext(UserDetailContext);
 
-  const interviewList = useQuery(
+  // Explicit type pinned directly, same reasoning as the two prior
+  // "implicitly has an 'any' type" fixes (see
+  // PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md) - this query's
+  // own handler is simple (a plain Doc<'InterviewSessionTable'>[] return,
+  // nothing complex), so this annotation guards against whatever upstream
+  // Convex type-inference issue keeps surfacing project-wide, rather than
+  // assuming this one file's query is somehow special.
+  const interviewList: Doc<'InterviewSessionTable'>[] | undefined = useQuery(
     api.Interview.GetUserInterviews,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   );

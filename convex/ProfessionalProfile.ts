@@ -9,15 +9,12 @@ import {
     profileProjectValidator,
     profileWorkExperienceValidator,
 } from "./schema";
-// (D3) Personalized Job Discovery's profile-version fingerprint, reused
-// as-is from D2 rather than duplicated here - see convex/jobDiscovery.ts.
-// This does create a two-way import between this file and jobDiscovery.ts
-// (which already imports computeProfileCompletion from here), which is safe
-// specifically because both sides only ever call the other's function from
-// inside an async handler body, never at module-evaluation time - neither
-// module needs the other's export to exist yet at the moment it itself
-// finishes loading.
-import { computeProfileVersion } from "./jobDiscovery";
+// computeProfileCompletion/computeProfileVersion live in their own,
+// dependency-free module specifically so this file and convex/jobDiscovery.ts
+// never import from each other - see profileMatchingShared.ts's own header
+// comment for why that cycle, though runtime-safe, broke TypeScript's
+// return-type inference for Convex queries project-wide once introduced.
+import { computeProfileCompletion, computeProfileVersion, type ProfileCompletion, type ProfileCompletionField } from "./profileMatchingShared";
 
 // Professional Profile + User Onboarding backend (M1).
 //
@@ -407,35 +404,13 @@ async function findOwnedResumeId(ctx: QueryCtx, userId: Id<'UserTable'>, resumeI
 }
 
 // --- Completion -------------------------------------------------------------
-
-export type ProfileCompletionField = 'headline' | 'professionalSummary' | 'location' | 'skills' | 'experienceOrEducation';
-
-export interface ProfileCompletion {
-    isComplete: boolean;
-    // Share of the required sections that are filled in, 0-100.
-    percent: number;
-    missing: ProfileCompletionField[];
-}
-
-// The professional profile is complete only when these core sections are
-// filled. Onboarding answers don't count, so a user who has only finished
-// onboarding is never treated as having a complete profile. A fresher can
-// meet the experience requirement with education alone.
-export function computeProfileCompletion(profile: Partial<ProfileDoc> | null): ProfileCompletion {
-    const checks: [ProfileCompletionField, boolean][] = [
-        ['headline', !!profile?.headline],
-        ['professionalSummary', !!profile?.bio],
-        ['location', !!profile?.location],
-        ['skills', (profile?.skills?.length ?? 0) > 0],
-        ['experienceOrEducation', (profile?.workExperience?.length ?? 0) > 0 || (profile?.education?.length ?? 0) > 0],
-    ];
-    const missing = checks.filter(([, ok]) => !ok).map(([field]) => field);
-    return {
-        isComplete: missing.length === 0,
-        percent: Math.round(((checks.length - missing.length) / checks.length) * 100),
-        missing,
-    };
-}
+//
+// computeProfileCompletion() itself now lives in profileMatchingShared.ts
+// (imported above) - re-exported here under its original names so nothing
+// that already does `import { computeProfileCompletion } from
+// "./ProfessionalProfile"` (convex/Jobs.ts) needs to change.
+export type { ProfileCompletion, ProfileCompletionField };
+export { computeProfileCompletion };
 
 // Fields to add to a patch so the stored completion flag matches `merged`.
 // profileCompletedAt keeps the first time the profile became complete, and

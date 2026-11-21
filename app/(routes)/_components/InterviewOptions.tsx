@@ -22,13 +22,27 @@ export const INTERVIEW_MODES = [
   { value: 'rapid-fire', label: 'Rapid Fire' },
 ]
 
+export interface InterviewModeOption {
+  value: string
+  label: string
+}
+
 // Interview Modes are managed from the admin panel (Settings > Interview
 // Preferences). INTERVIEW_MODES is the fallback while the list loads or before
 // the admin has seeded it.
-export function useInterviewModes() {
+//
+// Explicit return type annotation is required here, not just style: without
+// it, if useQuery(api.InterviewModes.ListInterviewModes)'s inferred type ever
+// resolves to `any` (observed during a production build), that `any` silently
+// propagates through this function's inferred return type to every caller,
+// turning every downstream `.map()` callback's parameter into an implicit
+// `any` too - exactly the second build error this fixed. Declaring the return
+// type here pins it at the boundary regardless of what `modes`'s own type
+// resolves to.
+export function useInterviewModes(): InterviewModeOption[] {
   const modes = useQuery(api.InterviewModes.ListInterviewModes)
   return modes && modes.length > 0
-    ? modes.map(({ value, label }) => ({ value, label }))
+    ? modes.map(({ value, label }: { value: string; label: string }) => ({ value, label }))
     : INTERVIEW_MODES
 }
 

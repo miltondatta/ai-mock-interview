@@ -6,8 +6,19 @@ import { useQuery } from "convex/react"
 import { BriefcaseBusiness, ChevronRight } from "lucide-react"
 import { api } from "@/convex/_generated/api"
 import { UserDetailContext } from "@/context/UserDetailContext"
-import { JobCard } from "@/app/(routes)/jobs/_components/JobCard"
+import { JobCard, type JobItem } from "@/app/(routes)/jobs/_components/JobCard"
 import { formatLastRefreshed } from "@/utils/jobs/format"
+
+// Explicit shape for `data` below, pinned regardless of whatever
+// candidateData/liveData actually infer to. This is a deliberate, direct
+// fix (not just style) - see PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md's
+// "recurring implicitly-any build errors" entries: letting `data`'s type be
+// inferred purely from the candidateData/liveData ternary turned out not to
+// reliably produce a concrete array element type for later `.map()` calls,
+// even after removing the circular import between convex/ProfessionalProfile.ts
+// and convex/jobDiscovery.ts that caused the same symptom elsewhere. Pinning
+// the type here removes any dependency on how that inference chain resolves.
+type JobsViewData = { personalized: boolean; totalActiveJobs: number; jobs: JobItem[] }
 
 const DASHBOARD_LIMIT = 3
 
@@ -39,7 +50,7 @@ export default function JobsForYou() {
     api.Jobs.GetJobsForUser,
     userDetail?._id && needsLiveFallback ? { userId: userDetail._id, limit: DASHBOARD_LIMIT, matchesOnly: true } : "skip"
   )
-  const data = candidateData?.hasPersistedMatches ? candidateData : liveData
+  const data: JobsViewData | undefined = candidateData?.hasPersistedMatches ? candidateData : liveData
   const freshnessLabel = candidateData?.hasPersistedMatches ? formatLastRefreshed(candidateData.lastRefreshedAt) : null
 
   if (!data) return null

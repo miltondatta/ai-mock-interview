@@ -9,7 +9,7 @@ import { UserDetailContext } from "@/context/UserDetailContext"
 import { MATCH_THRESHOLD } from "@/convex/jobMatching"
 import { cn } from "@/lib/utils"
 import { Pagination } from "@/components/ui/pagination"
-import { JobCard } from "./_components/JobCard"
+import { JobCard, type JobItem } from "./_components/JobCard"
 import {
   daysUntilDeadline,
   EXPERIENCE_LEVELS,
@@ -27,6 +27,14 @@ const filterChipClass = (active: boolean) =>
   )
 
 const PAGE_SIZE = 10
+
+// Explicit shape for `data` below, pinned regardless of whatever
+// candidateData/liveData actually infer to - see
+// app/(routes)/dashboard/JobsForYou.tsx's identical fix and
+// PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md's "recurring
+// implicitly-any build errors" entries for why this is a direct fix, not
+// just style.
+type JobsViewData = { personalized: boolean; totalActiveJobs: number; jobs: JobItem[] }
 
 // Jobs page (M7): every active job posted by admins (/admin/jobs). With a
 // complete profile, jobs are sorted by match score and can be filtered to
@@ -46,7 +54,7 @@ export default function JobsPage() {
   const candidateData = useQuery(api.jobDiscovery.GetCandidateMatches, userDetail?._id ? { userId: userDetail._id } : "skip")
   const needsLiveFallback = candidateData === undefined || !candidateData.hasPersistedMatches
   const liveData = useQuery(api.Jobs.GetJobsForUser, userDetail?._id && needsLiveFallback ? { userId: userDetail._id } : "skip")
-  const data = candidateData?.hasPersistedMatches ? candidateData : liveData
+  const data: JobsViewData | undefined = candidateData?.hasPersistedMatches ? candidateData : liveData
   const freshnessLabel = candidateData?.hasPersistedMatches ? formatLastRefreshed(candidateData.lastRefreshedAt) : null
   const [search, setSearch] = useState("")
   const [matchesOnly, setMatchesOnly] = useState(false)

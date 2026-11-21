@@ -1,9 +1,17 @@
 import { internalMutation, internalQuery, internalAction, action, query } from "./_generated/server";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { PaginationResult } from "convex/server";
 import { api, internal } from "./_generated/api";
-import { computeProfileCompletion } from "./ProfessionalProfile";
+// computeProfileCompletion/computeProfileVersion live in their own,
+// dependency-free module specifically so this file and
+// convex/ProfessionalProfile.ts never import from each other - see
+// profileMatchingShared.ts's own header comment for why that cycle, though
+// runtime-safe, broke TypeScript's return-type inference for Convex
+// queries project-wide once introduced (surfaced as repeated, seemingly
+// unrelated "implicitly has an 'any' type" build errors).
+import { computeProfileCompletion, computeProfileVersion } from "./profileMatchingShared";
 import { matchJob } from "./jobMatching";
 // Reused as-is for triggerInitialJobSearch below - the exact same
 // provider-sync entry points convex/himalayasSync.ts's AdminSyncHimalayas
@@ -77,72 +85,10 @@ function isJobEligible(job: Doc<"jobs">, today: string): boolean {
   return job.active && (!job.applicationDeadline || job.applicationDeadline >= today);
 }
 
-// --- Profile version (D1 field, computed here for the first time) --------------
-//
-// A plain, deterministic fingerprint - NOT a cryptographic hash - of exactly
-// the profile fields convex/jobMatching.ts's matchJob() and
-// convex/ProfessionalProfile.ts's computeProfileCompletion() actually read.
-// A non-cryptographic hash is deliberate and sufficient: this value is only
-// ever used to answer "did anything matching-relevant change since last
-// time," never for anything security-sensitive. It is implemented as plain
-// arithmetic over character codes (two independent FNV-1a-style passes,
-// concatenated) rather than Node's `crypto` module, because this function
-// runs inside a Convex internalMutation, which executes in Convex's default
-// (non-"use node") runtime - unlike the Next.js-side lib/adminAuth.ts, which
-// can use `node:crypto` because API routes run in a Node runtime. Using a
-// Node-only API here would risk a runtime error this milestone has no way
-// to self-test against (per "don't test yourself").
-//
-// workExperience is intentionally read in its STORED ORDER and limited to
-// the first 3 entries - exactly mirroring matchJob()'s scoreTitle(), which
-// only ever looks at `(p.workExperience ?? []).slice(0, 3)` in array order.
-// Reordering work experience can change which 3 entries scoreTitle sees, so
-// this must NOT be sorted. Every other list below only affects set-membership
-// or substring checks in matchJob(), never list order, so each one is
-// sorted before hashing - this avoids an unnecessary version bump (and so an
-// unnecessary recompute, once D3 wires the trigger) when a candidate merely
-// reorders skills/projects/certifications/education without changing their
-// content.
-function fnv1a(input: string, seed: number): string {
-  let hash = seed;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    // 32-bit FNV prime multiplication, kept in 32-bit range via >>> 0.
-    hash = (hash * 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
-// (D3 compatibility adjustment) Widened from `Profile | null` to
-// `Partial<Profile> | null` - the one strictly necessary change this
-// milestone's own scope restrictions allow in this file. D3's
-// CreateProfile/UpdateProfile need to compute a version from a draft
-// (existing row merged with an in-flight, not-yet-saved patch), which is
-// only a Partial<Profile>, not a full Doc - exactly the same reason
-// convex/ProfessionalProfile.ts's own computeProfileCompletion() already
-// takes `Partial<ProfileDoc> | null` rather than a full Doc. Every field
-// access below was already optional-chained, so this widening changes no
-// behavior for the existing D2 caller (a full Doc is a valid
-// Partial<Profile>).
-export function computeProfileVersion(profile: Partial<Profile> | null): string {
-  const relevant = {
-    targetJobRole: profile?.targetJobRole ?? null,
-    headline: profile?.headline ?? null,
-    bio: profile?.bio ?? null,
-    yearsOfExperience: profile?.yearsOfExperience ?? null,
-    location: profile?.location ?? null,
-    targetCompany: profile?.targetCompany ?? null,
-    // Order-sensitive - see comment above. Position only, first 3, as-stored.
-    recentPositions: (profile?.workExperience ?? []).slice(0, 3).map((w) => w.position),
-    // Order-insensitive below - sorted for a stable fingerprint.
-    skills: [...(profile?.skills ?? [])].sort(),
-    certificationNames: (profile?.certifications ?? []).map((c) => c.name).sort(),
-    projectTexts: (profile?.projects ?? []).map((p) => `${p.title}\u0000${p.description ?? ""}`).sort(),
-    educationDegrees: (profile?.education ?? []).map((e) => e.degree ?? "").sort(),
-  };
-  const serialized = JSON.stringify(relevant);
-  return `${fnv1a(serialized, 0x811c9dc5)}${fnv1a(serialized, 0x12345679)}`;
-}
+// computeProfileVersion() itself now lives in profileMatchingShared.ts
+// (imported above, D1/D3) - moved out specifically to break a circular
+// import with convex/ProfessionalProfile.ts. Nothing in this file needed
+// to change beyond the import; every call site below is unchanged.
 
 // --- Shared matching/persistence helper -----------------------------------------
 //
@@ -159,12 +105,36 @@ export function computeProfileVersion(profile: Partial<Profile> | null): string 
 // is this milestone's own, documented caller - see its own comment for why
 // it passes "profile_update" rather than a (schema-unsupported) distinct
 // "manual" value.
+// Explicit result type, and an explicit return-type annotation on the
+// handler below - required, not stylistic. Other functions in this same
+// file (AdminRefreshCandidateMatches, triggerInitialJobSearch,
+// runDailyMatchingCycle) call this one via `internal.jobDiscovery.
+// refreshCandidateMatches`, which means resolving THEIR return type
+// requires resolving this module's own exported type - which includes
+// THEM - a genuine self-referential cycle TypeScript cannot infer through.
+// `npx tsc --noEmit` surfaced this directly ("implicitly has type 'any'
+// because it is referenced directly or indirectly in its own initializer"),
+// and that one unresolved cycle was silently collapsing Convex's whole
+// generated `api`/`internal` type to `any` for every module project-wide -
+// the real explanation for the run of seemingly unrelated "implicitly any"
+// build errors across completely unrelated files. An explicit return type
+// here (and on every other function below that self-references this
+// module) breaks the cycle: TypeScript no longer needs to infer anything
+// from the module's shape, so there is nothing left to resolve circularly.
+export interface RefreshCandidateMatchesResult {
+  status: "success" | "partial" | "failed";
+  candidatesProcessed: number;
+  matchesWritten: number;
+  matchesPruned: number;
+  errorMessage: string | undefined;
+}
+
 export const refreshCandidateMatches = internalMutation({
   args: {
     userId: v.id("UserTable"),
     trigger: v.union(v.literal("profile_update"), v.literal("daily_cycle")),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<RefreshCandidateMatchesResult> => {
     const startedAt = Date.now();
     const runId = await ctx.db.insert("candidateMatchRuns", {
       trigger: args.trigger,
@@ -333,7 +303,7 @@ export const refreshCandidateMatches = internalMutation({
 // trail later.
 export const AdminRefreshCandidateMatches = action({
   args: { token: v.string(), userId: v.id("UserTable") },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<RefreshCandidateMatchesResult> => {
     const session = await ctx.runQuery(api.admin.VerifySession, { token: args.token });
     if (!session) throw new Error("Unauthorized");
     return await ctx.runMutation(internal.jobDiscovery.refreshCandidateMatches, {
@@ -388,7 +358,13 @@ const STALE_DAILY_RUN_MS = 60 * 60 * 1000;
 // error worth recording a second audit row for.
 export const beginDailyMatchRun = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  // Explicit return type - required, not stylistic. See
+  // RefreshCandidateMatchesResult's comment above: this function is called
+  // from runDailyMatchingCycle in this same file via
+  // `internal.jobDiscovery.beginDailyMatchRun`, which cannot have its type
+  // inferred without resolving this module's own exported shape - a cycle
+  // that collapses to `any` without an explicit annotation here.
+  handler: async (ctx): Promise<Id<"candidateMatchRuns"> | null> => {
     const now = Date.now();
     const recent = await ctx.db
       .query("candidateMatchRuns")
@@ -415,7 +391,8 @@ export const finishDailyMatchRun = internalMutation({
     matchesPruned: v.optional(v.number()),
     errorMessage: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  // Explicit return type for the same reason as beginDailyMatchRun above.
+  handler: async (ctx, args): Promise<void> => {
     const { runId, status, candidatesProcessed, matchesWritten, matchesPruned, errorMessage } = args;
     await ctx.db.patch(runId, {
       finishedAt: Date.now(),
@@ -444,7 +421,9 @@ export const finishDailyMatchRun = internalMutation({
 // authorization.
 export const listCandidateProfilesPage = internalQuery({
   args: { paginationOpts: paginationOptsValidator },
-  handler: async (ctx, args) => {
+  // Explicit return type for the same reason as beginDailyMatchRun above -
+  // this is called from runDailyMatchingCycle in this same file.
+  handler: async (ctx, args): Promise<PaginationResult<Doc<"UserProfileTable">>> => {
     return await ctx.db.query("UserProfileTable").paginate(args.paginationOpts);
   },
 });
@@ -458,7 +437,9 @@ export const listCandidateProfilesPage = internalQuery({
 // ctx.runMutation/ctx.runQuery calls).
 export const runDailyMatchingCycle = internalAction({
   args: {},
-  handler: async (ctx) => {
+  // Explicit return type for the same reason as beginDailyMatchRun above -
+  // this function itself self-references three siblings in this module.
+  handler: async (ctx): Promise<void> => {
     const runId = await ctx.runMutation(internal.jobDiscovery.beginDailyMatchRun, {});
     if (runId === null) return; // another daily cycle is already in progress - see beginDailyMatchRun.
 
@@ -472,9 +453,10 @@ export const runDailyMatchingCycle = internalAction({
       let cursor: string | null = null;
       let isDone = false;
       while (!isDone) {
-        const page = await ctx.runQuery(internal.jobDiscovery.listCandidateProfilesPage, {
-          paginationOpts: { numItems: DAILY_MATCH_PAGE_SIZE, cursor },
-        });
+        const page: PaginationResult<Doc<"UserProfileTable">> = await ctx.runQuery(
+          internal.jobDiscovery.listCandidateProfilesPage,
+          { paginationOpts: { numItems: DAILY_MATCH_PAGE_SIZE, cursor } }
+        );
 
         for (const profile of page.page) {
           // Skip incomplete profiles entirely at this level, per the
@@ -587,13 +569,27 @@ export const runDailyMatchingCycle = internalAction({
 // PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md's D5 entry for the
 // full record of that decision. This query introduces NO additional
 // exposure beyond what GetJobsForUser already has today.
+// Doesn't self-reference anything in this module (pure ctx.db reads), so
+// this wasn't part of the actual cycle - the explicit return type here is
+// added anyway, for the same defense-in-depth reason every other handler
+// in this file now has one: it also makes consuming this query from
+// outside this file (app/(routes)/jobs/page.tsx, JobsForYou.tsx) resolve
+// to a concrete type without relying on inference through `useQuery`.
+export interface GetCandidateMatchesResult {
+  hasPersistedMatches: boolean;
+  lastRefreshedAt: number | null;
+  personalized: boolean;
+  totalActiveJobs: number;
+  jobs: JobForUser[];
+}
+
 export const GetCandidateMatches = query({
   args: {
     userId: v.id("UserTable"),
     limit: v.optional(v.number()),
     matchesOnly: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<GetCandidateMatchesResult> => {
     const limit = Math.max(1, Math.min(MAX_JOBS_FOR_MATCHING, Math.floor(args.limit ?? MAX_JOBS_FOR_MATCHING)));
     const today = todayDateKey();
 
@@ -695,7 +691,9 @@ export const GetCandidateMatches = query({
 // this candidate is scored against the freshly-synced pool.
 export const triggerInitialJobSearch = internalAction({
   args: { userId: v.id("UserTable") },
-  handler: async (ctx, args) => {
+  // Explicit return type for the same reason as beginDailyMatchRun above -
+  // this function self-references refreshCandidateMatches in this module.
+  handler: async (ctx, args): Promise<void> => {
     try {
       await syncHimalayas(ctx);
     } catch (err) {

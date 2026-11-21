@@ -32,6 +32,7 @@ import type * as jobMatching from "../jobMatching.js";
 import type * as jobSyncRunner from "../jobSyncRunner.js";
 import type * as jobSyncShared from "../jobSyncShared.js";
 import type * as jobicy from "../jobicy.js";
+import type * as profileMatchingShared from "../profileMatchingShared.js";
 import type * as rateLimit from "../rateLimit.js";
 import type * as users from "../users.js";
 
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   jobSyncRunner: typeof jobSyncRunner;
   jobSyncShared: typeof jobSyncShared;
   jobicy: typeof jobicy;
+  profileMatchingShared: typeof profileMatchingShared;
   rateLimit: typeof rateLimit;
   users: typeof users;
 }>;
