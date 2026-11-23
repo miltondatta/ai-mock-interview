@@ -1,5 +1,8 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { motion } from "motion/react";
 import { ArrowRight } from "lucide-react";
 import { productSections } from "./data";
 
@@ -30,20 +33,34 @@ export default function ProductShowcase() {
                   section.reverse ? "lg:flex-row-reverse" : ""
                 }`}
               >
-                <div className="w-full lg:w-1/2">
-                  <div className="overflow-hidden rounded-2xl border border-stone-200 bg-stone-50 shadow-lg shadow-stone-900/5">
-                    <Image
-                      src={section.imageSrc}
-                      alt={section.imageAlt}
-                      width={section.width}
-                      height={section.height}
-                      sizes="(min-width: 1024px) 50vw, 100vw"
-                      className="h-auto w-full object-contain"
-                    />
+                <motion.div
+                  initial={{ opacity: 0, x: section.reverse ? 40 : -40 }}
+                  whileInView={{ opacity: 1, x: 0 }}
+                  viewport={{ once: true, amount: 0.3 }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
+                  className="w-full lg:w-1/2"
+                >
+                  <div className="relative z-0 cursor-zoom-in overflow-hidden rounded-2xl bg-gradient-to-br from-orange-200 via-stone-200 to-orange-100 p-px shadow-xl shadow-stone-900/10 transition-transform duration-300 ease-out hover:z-10 hover:scale-[1.12] hover:shadow-2xl">
+                    <div className="overflow-hidden rounded-[15px] bg-stone-50">
+                      <Image
+                        src={section.imageSrc}
+                        alt={section.imageAlt}
+                        width={section.width}
+                        height={section.height}
+                        unoptimized
+                        className="h-auto w-full object-contain"
+                      />
+                    </div>
                   </div>
-                </div>
+                </motion.div>
 
-                <div className="w-full lg:w-1/2">
+                <motion.div
+                  initial={{ opacity: 0, x: section.reverse ? -40 : 40 }}
+                  whileInView={{ opacity: 1, x: 0 }}
+                  viewport={{ once: true, amount: 0.3 }}
+                  transition={{ duration: 0.6, ease: "easeOut", delay: 0.1 }}
+                  className="w-full lg:w-1/2"
+                >
                   <span className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-700">
                     <Icon className="size-3.5" />
                     {section.eyebrow}
@@ -71,7 +88,7 @@ export default function ProductShowcase() {
                     {section.cta}
                     <ArrowRight className="size-4" />
                   </Link>
-                </div>
+                </motion.div>
               </div>
             );
           })}
