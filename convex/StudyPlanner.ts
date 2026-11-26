@@ -223,6 +223,43 @@ export const GetDashboardStats = query({
   },
 });
 
+// Dashboard Part 4 - Recent Activity feed. There is no dedicated
+// event-tracking table for this; rather than build one, this derives
+// "completed study topic" entries directly from studyPlanTasks' own
+// `completedAt` (set when a task is marked completed), read-only, across
+// every plan the candidate has. Newest first, capped at `limit`.
+export const GetRecentCompletedTasks = query({
+  args: {
+    userId: v.id("UserTable"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const tasks = await ctx.db
+      .query("studyPlanTasks")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    const completed = tasks
+      .filter((t) => t.status === "completed" && t.completedAt != null)
+      .sort((a, b) => (b.completedAt as number) - (a.completedAt as number))
+      .slice(0, Math.max(1, args.limit ?? 5));
+
+    const planIds = [...new Set(completed.map((t) => t.studyPlanId))];
+    const plans = await Promise.all(planIds.map((id) => ctx.db.get(id)));
+    const planTitleById = new Map(
+      plans.filter((p): p is Doc<"studyPlans"> => !!p).map((p) => [p._id, p.title])
+    );
+
+    return completed.map((t) => ({
+      _id: t._id,
+      title: t.title,
+      studyPlanId: t.studyPlanId,
+      planTitle: planTitleById.get(t.studyPlanId) ?? "Study plan",
+      completedAt: t.completedAt as number,
+    }));
+  },
+});
+
 // --- Study Room Topic Sync ---------------------------------------------------
 // The Study Room dashboard's "My Study Rooms" section used to show only
 // rooms that already existed - a topic the learner hadn't started yet in AI

@@ -3,71 +3,71 @@
 import { useUser } from '@clerk/nextjs'
 import React, { useContext } from 'react'
 import Link from 'next/link'
-import EmptyState from './EmptyState';
-import InterviewCard from './InterviewCard';
 import ResumeMatchHistory from './ResumeMatchHistory';
 import ProfileSetupPrompt from './ProfileSetupPrompt';
 import JobsForYou from './JobsForYou';
+import ProgressOverview from './ProgressOverview';
+import ContinueJourney from './ContinueJourney';
+import CareerToolkit from './CareerToolkit';
+import ActivitySections from './ActivitySections';
+import RecentActivity from './RecentActivity';
 import { Button } from '@/components/ui/button';
-import { Plus } from 'lucide-react';
+import { MessagesSquare, BriefcaseBusiness } from 'lucide-react';
 import { useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
-import type { Doc } from '@/convex/_generated/dataModel';
 import { UserDetailContext } from '@/context/UserDetailContext';
 
 function Dashboard() {
   const {user} = useUser();
   const {userDetail} = useContext(UserDetailContext);
 
-  // Explicit type pinned directly, same reasoning as the two prior
-  // "implicitly has an 'any' type" fixes (see
-  // PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md) - this query's
-  // own handler is simple (a plain Doc<'InterviewSessionTable'>[] return,
-  // nothing complex), so this annotation guards against whatever upstream
-  // Convex type-inference issue keeps surfacing project-wide, rather than
-  // assuming this one file's query is somehow special.
-  const interviewList: Doc<'InterviewSessionTable'>[] | undefined = useQuery(
-    api.Interview.GetUserInterviews,
-    userDetail?._id ? { userId: userDetail._id } : "skip"
-  );
   const resumeMatchList = useQuery(
     api.ResumeMatch.GetUserResumeMatchAnalyses,
     userDetail?._id ? { userId: userDetail._id } : "skip"
   );
 
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
   return (
     <div className='mx-auto max-w-6xl px-6 py-10 md:px-10 md:py-14'>
-      <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
+      <div className='flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center'>
         <div>
-          <p className='text-sm font-medium text-muted-foreground'>My Dashboard</p>
+          <p className='text-sm font-medium text-muted-foreground'>{today}</p>
           <h1 className='mt-1 text-2xl font-bold tracking-tight md:text-3xl'>
-            Welcome back{user?.fullName ? `, ${user.fullName}` : ""}
+            Welcome back{user?.firstName ? `, ${user.firstName}` : ""}
           </h1>
+          <p className='mt-1.5 text-[15px] text-muted-foreground'>
+            Your career preparation journey, all in one place.
+          </p>
         </div>
-        <Button size="lg" nativeButton={false} render={<Link href="/create-interview" />}>
-          <Plus />Create Interview
-        </Button>
+        <div className='flex w-full flex-col items-stretch gap-2.5 sm:w-auto sm:flex-row sm:items-center sm:gap-3'>
+          <Button variant="outline" size="lg" nativeButton={false} render={<Link href="/jobs" />}>
+            <BriefcaseBusiness />Explore Jobs
+          </Button>
+          <Button size="lg" nativeButton={false} render={<Link href="/create-interview" />}>
+            <MessagesSquare />Start Mock Interview
+          </Button>
+        </div>
       </div>
+
+      <ProgressOverview />
 
       <ProfileSetupPrompt />
 
-      {interviewList && (
-        <>
-          {/* Both branches stay mounted and are toggled with CSS (not unmounted via a
-              ternary) to avoid a remount flicker the instant this list flips
-              between empty and non-empty. */}
-          <div className={interviewList.length > 0 ? 'mt-10 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3' : 'hidden'}>
-            {interviewList.map((interview) => (
-              <InterviewCard key={interview._id} interview={interview} />
-            ))}
-          </div>
-          <div className={interviewList.length === 0 ? '' : 'hidden'}>
-            <EmptyState />
-          </div>
-        </>
-      )}
+      <ContinueJourney />
+
+      <CareerToolkit />
 
       <JobsForYou />
+
+      <ActivitySections />
+
+      <RecentActivity />
 
       {resumeMatchList && <ResumeMatchHistory items={resumeMatchList} />}
     </div>

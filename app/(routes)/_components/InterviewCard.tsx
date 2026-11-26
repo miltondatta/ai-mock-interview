@@ -19,7 +19,7 @@ import { Doc } from '@/convex/_generated/dataModel'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import { UserDetailContext } from '@/context/UserDetailContext'
-import { INTERVIEW_MODES, useInterviewModes } from '../_components/InterviewOptions'
+import { INTERVIEW_MODES, useInterviewModes } from './InterviewOptions'
 import { DEFAULT_INTERVIEW_LANGUAGE, findLanguageOption, LanguageOption, useLanguageOptions } from '../settings/languages'
 
 // Falls back to the built-in list so interviews created with a mode the admin

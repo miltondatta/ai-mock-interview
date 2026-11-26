@@ -53,48 +53,77 @@ export default function JobsForYou() {
   const data: JobsViewData | undefined = candidateData?.hasPersistedMatches ? candidateData : liveData
   const freshnessLabel = candidateData?.hasPersistedMatches ? formatLastRefreshed(candidateData.lastRefreshedAt) : null
 
-  if (!data) return null
+  // Dashboard Part 3 - recommendations may still be loading (candidateData
+  // not resolved yet) or actively being generated (persisted matches don't
+  // exist yet and the live fallback hasn't resolved either). Previously
+  // this returned null and the section simply didn't render during that
+  // window; it now shows a real loading state instead, per spec.
+  // Dashboard Part 5 - heading now sits above the card, matching every
+  // other dashboard section's header treatment (ContinueJourney,
+  // CareerToolkit, ActivitySections, RecentActivity all use a bare
+  // `text-xl font-bold` h2 above their card, not a smaller icon-prefixed
+  // heading inside it). Purely a visual/structural change - no query or
+  // data logic below was touched.
+  if (!data) {
+    return (
+      <section className="mt-10">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="jobs-for-you-title" className="text-xl font-bold tracking-tight text-foreground">Jobs for You</h2>
+        </div>
+        <div aria-labelledby="jobs-for-you-title" className="mt-4 rounded-2xl border border-border bg-card p-5 sm:p-6">
+          <p className="text-xs text-muted-foreground">Finding your best matches…</p>
+          <div className="mt-4 flex flex-col gap-2.5">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-[72px] animate-pulse rounded-xl border border-border bg-muted/40" />
+            ))}
+          </div>
+        </div>
+      </section>
+    )
+  }
 
   const personalized = data.personalized
-  const title = personalized ? "Jobs for you" : "Latest jobs"
+  const title = personalized ? "Jobs for You" : "Latest Jobs"
 
   return (
-    <section aria-labelledby="jobs-for-you-title" className="mt-10 rounded-xl border border-border bg-card p-5 sm:p-6">
+    <section className="mt-10">
       <div className="flex items-center justify-between gap-3">
-        <h2 id="jobs-for-you-title" className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <BriefcaseBusiness className="size-4 text-primary" /> {title}
-        </h2>
+        <h2 id="jobs-for-you-title" className="text-xl font-bold tracking-tight text-foreground">{title}</h2>
         {data.totalActiveJobs > 0 && (
           <Link href="/jobs" className="inline-flex items-center gap-0.5 text-sm font-medium text-primary hover:text-primary/80">
-            See all <ChevronRight className="size-4" />
+            View All Jobs <ChevronRight className="size-4" />
           </Link>
         )}
       </div>
-      {!personalized && data.totalActiveJobs > 0 && (
-        <p className="mt-1 text-sm text-muted-foreground">Complete your profile to see jobs matched to your skills and experience.</p>
-      )}
-      {/* (D5) Only shown while actually displaying persisted recommendations,
-          never during the live GetJobsForUser fallback. Always a real
-          Convex timestamp, never hardcoded. */}
-      {freshnessLabel && <p className="mt-1 text-xs text-muted-foreground">{freshnessLabel}</p>}
 
-      {data.totalActiveJobs === 0 ? (
-        <p className="mt-4 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-          No job openings have been posted yet. Check back soon.
-        </p>
-      ) : data.jobs.length === 0 ? (
-        <div className="mt-4 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">No strong matches right now</p>
-          <p className="mt-1">
-            Adding more skills to your <Link href="/profile/edit" className="text-primary hover:text-primary/80">profile</Link> can
-            improve matches, or <Link href="/jobs" className="text-primary hover:text-primary/80">browse all {data.totalActiveJobs} openings</Link>.
-          </p>
-        </div>
-      ) : (
-        <div className="mt-4 flex flex-col gap-2.5">
-          {data.jobs.map(item => <JobCard key={item.job._id} item={item} compact />)}
-        </div>
-      )}
+      <div aria-labelledby="jobs-for-you-title" className="mt-4 rounded-2xl border border-border bg-card p-5 sm:p-6">
+        {!personalized && data.totalActiveJobs > 0 && (
+          <p className="text-sm text-muted-foreground">Complete your profile to see jobs matched to your skills and experience.</p>
+        )}
+        {/* (D5) Only shown while actually displaying persisted recommendations,
+            never during the live GetJobsForUser fallback. Always a real
+            Convex timestamp, never hardcoded. */}
+        {freshnessLabel && <p className="mt-1 text-xs text-muted-foreground">{freshnessLabel}</p>}
+
+        {data.totalActiveJobs === 0 ? (
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-muted/40 px-6 py-8 text-center">
+            <BriefcaseBusiness className="size-4 shrink-0 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">No job openings have been posted yet. Check back soon.</p>
+          </div>
+        ) : data.jobs.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-6 py-8 text-center">
+            <p className="font-medium text-foreground">No strong matches right now</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Adding more skills to your <Link href="/profile/edit" className="text-primary hover:text-primary/80">profile</Link> can
+              improve matches, or <Link href="/jobs" className="text-primary hover:text-primary/80">browse all {data.totalActiveJobs} openings</Link>.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {data.jobs.map(item => <JobCard key={item.job._id} item={item} compact />)}
+          </div>
+        )}
+      </div>
     </section>
   )
 }
