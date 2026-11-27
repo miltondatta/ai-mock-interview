@@ -12,7 +12,10 @@ import { api, internal } from "./_generated/api";
 // queries project-wide once introduced (surfaced as repeated, seemingly
 // unrelated "implicitly has an 'any' type" build errors).
 import { computeProfileCompletion, computeProfileVersion } from "./profileMatchingShared";
-import { matchJob } from "./jobMatching";
+import { matchJob, type MatchResult } from "./jobMatching";
+// P1's one, reusable config-access mechanism (P0) - this file never reads
+// JobMatchingConfigTable directly or keeps its own copy of the defaults.
+import { getEffectiveJobMatchingConfig } from "./jobMatchingConfig";
 // Reused as-is for triggerInitialJobSearch below - the exact same
 // provider-sync entry points convex/himalayasSync.ts's AdminSyncHimalayas
 // and convex/jobicy.ts's AdminSyncJobicy already call. No sync/fetch logic
@@ -124,9 +127,62 @@ function isJobEligible(job: Doc<"jobs">, today: string): boolean {
 export interface RefreshCandidateMatchesResult {
   status: "success" | "partial" | "failed";
   candidatesProcessed: number;
+  // Total rows actually inserted or patched (matchesInserted + matchesUpdated)
+  // - kept at its original meaning for backward compatibility with any
+  // existing caller reading only this field (e.g. runDailyMatchingCycle).
   matchesWritten: number;
+  // P2 breakdown of matchesWritten, plus matchesSkipped (a selected,
+  // qualifying recommendation that required no write at all because its
+  // meaningful fields already matched the stored row - see
+  // sameRecommendation() below).
+  matchesInserted: number;
+  matchesUpdated: number;
+  matchesSkipped: number;
   matchesPruned: number;
   errorMessage: string | undefined;
+}
+
+// --- P2: "did this recommendation meaningfully change?" -------------------------
+//
+// Only the fields that are actually shown to, or that decide whether a job
+// is recommended to, the candidate - never operational metadata
+// (generatedAt/lastUpdatedAt/profileVersion are deliberately excluded, same
+// as a timestamp would be). matchJob() itself is never called from here;
+// this only compares two already-computed results.
+
+// matchedSkills/missingSkills are built by iterating job.requiredSkills in
+// THAT array's order (see jobMatching.ts's scoreSkills()) - order here
+// reflects an admin's/provider's arbitrary skill ordering, not anything
+// candidate-specific, so it is not semantically meaningful. Compared as a
+// multiset (sorted copies, never the original arrays, and never a JSON
+// string comparison, which would false-positive on a harmless reorder or
+// false-negative on genuinely different data presented in a convenient
+// order) rather than by array reference or index position.
+function sameSkillSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((v, i) => v === sortedB[i]);
+}
+
+// matchReasons IS ordered strongest-first by matchJob() itself (see
+// jobMatching.ts's own "strongest first" comment and its contribution-based
+// sort) - a change in order is a genuine change in what's being
+// communicated to the candidate, so this is compared positionally, not as a
+// set.
+function sameOrderedList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
+function sameRecommendation(existing: Doc<"candidateJobMatches">, result: MatchResult): boolean {
+  return (
+    existing.matchScore === result.score &&
+    existing.isMatch === result.isMatch &&
+    sameSkillSet(existing.matchedSkills, result.matchedSkills) &&
+    sameSkillSet(existing.missingSkills, result.missingSkills) &&
+    sameOrderedList(existing.matchReasons, result.reasons)
+  );
 }
 
 export const refreshCandidateMatches = internalMutation({
@@ -144,7 +200,9 @@ export const refreshCandidateMatches = internalMutation({
     });
 
     let candidatesProcessed = 0;
-    let matchesWritten = 0;
+    let matchesInserted = 0;
+    let matchesUpdated = 0;
+    let matchesSkipped = 0;
     let matchesPruned = 0;
     let errorMessage: string | undefined;
 
@@ -185,6 +243,11 @@ export const refreshCandidateMatches = internalMutation({
       } else {
         const profileVersion = computeProfileVersion(profile);
         const today = todayDateKey();
+        // P1: the configured eligibility/limit/sort rules, read fresh on
+        // every run (never cached across runs, never hardcoded) - see
+        // convex/jobMatchingConfig.ts. Falls back to the P0 defaults on its
+        // own when no admin has ever saved a configuration row.
+        const config = await getEffectiveJobMatchingConfig(ctx);
 
         const scanned = await ctx.db
           .query("jobs")
@@ -192,17 +255,86 @@ export const refreshCandidateMatches = internalMutation({
           .order("desc")
           .take(MAX_JOBS_FOR_MATCHING);
         const eligible = scanned.filter((job) => isJobEligible(job, today));
-        const rescoredJobIds = new Set(eligible.map((job) => job._id));
 
+        // Every job this run has an opinion about, scored at most once each.
+        // matchJob() itself, its weights/thresholds/reasons generation, is
+        // used completely unmodified - P1 only decides what happens to what
+        // it already returns.
+        type Scored = { job: Doc<"jobs">; result: MatchResult };
+        const scoredById = new Map<Id<"jobs">, Scored>();
         for (const job of eligible) {
-          // matchJob() itself, its weights/thresholds/reasons generation,
-          // is used completely unmodified - this only persists what it
-          // already returns.
-          const result = matchJob(job, profile);
+          scoredById.set(job._id, { job, result: matchJob(job, profile) });
+        }
+
+        // Existing rows whose job fell outside this run's MAX_JOBS_FOR_MATCHING
+        // scan window are re-scored individually (one ctx.db.get each - never
+        // a second full-table scan) rather than left untouched: the
+        // configured eligibility rule (score/isMatch) can newly disqualify a
+        // row even when nothing about isJobEligible() itself changed, and
+        // Section 6 of this milestone requires that check for every existing
+        // row, not only the freshly-scanned ones. A job that's gone or now
+        // genuinely ineligible is simply left unscored here - the prune pass
+        // below removes its row for that reason on its own.
+        for (const row of existingMatches) {
+          if (scoredById.has(row.jobId)) continue;
+          const job = await ctx.db.get(row.jobId);
+          if (job && isJobEligible(job, today)) {
+            scoredById.set(row.jobId, { job, result: matchJob(job, profile) });
+          }
+        }
+
+        // --- Rule A/B: configurable eligibility -----------------------------------
+        // score >= minimumMatchScore always; additionally isMatch === true
+        // only when requireIsMatch is enabled. A high score never implies
+        // isMatch on its own (jobMatching.ts's own relevance gate is
+        // independent of score - see JOB_PERSISTENCE_FILTERING_INVESTIGATION_REPORT.md
+        // section C), so this is checked explicitly rather than assumed.
+        const qualifying = [...scoredById.values()].filter(
+          ({ result }) => result.score >= config.minimumMatchScore && (!config.requireIsMatch || result.isMatch)
+        );
+
+        // --- Rule: configurable, deterministic sort -------------------------------
+        // postedAt is a required, always-numeric field on every job row
+        // today, but an invalid/non-finite value (defensively) sorts as the
+        // oldest possible date rather than throwing or producing a
+        // nondeterministic order.
+        const safePostedAt = (job: Doc<"jobs">) => (Number.isFinite(job.postedAt) ? job.postedAt : 0);
+        const byIdAsc = (a: Scored, b: Scored) =>
+          a.job._id === b.job._id ? 0 : a.job._id < b.job._id ? -1 : 1;
+        qualifying.sort((a, b) => {
+          if (config.recommendationSortOrder === "newest_first") {
+            return safePostedAt(b.job) - safePostedAt(a.job) || b.result.score - a.result.score || byIdAsc(a, b);
+          }
+          // "score_desc" (default) - highest score first, newer posting as
+          // the tiebreak, a stable job-id comparison as the final tiebreak.
+          return b.result.score - a.result.score || safePostedAt(b.job) - safePostedAt(a.job) || byIdAsc(a, b);
+        });
+
+        // --- Rule: configurable cap, never padded ---------------------------------
+        const selected = qualifying.slice(0, config.maxRecommendationsPerCandidate);
+        const selectedJobIds = new Set(selected.map(({ job }) => job._id));
+
+        // --- Persist only the selected, qualifying set ----------------------------
+        // P2: one point read (by_user_job, same index as always - never a
+        // duplicate read for the same candidate-job pair) decides between
+        // three outcomes - skip entirely, patch, or insert - rather than
+        // always patching/inserting as P1 did.
+        for (const { job, result } of selected) {
           const existing = await ctx.db
             .query("candidateJobMatches")
             .withIndex("by_user_job", (q) => q.eq("userId", args.userId).eq("jobId", job._id))
             .first();
+
+          if (existing && sameRecommendation(existing, result)) {
+            // Every meaningful field already matches what's stored - no
+            // write at all, not even to refresh generatedAt/lastUpdatedAt/
+            // profileVersion (those are operational metadata, not
+            // recommendation content, per this milestone's own instruction
+            // not to write unchanged records merely to update timestamps).
+            matchesSkipped++;
+            continue;
+          }
+
           const fields = {
             matchScore: result.score,
             isMatch: result.isMatch,
@@ -216,28 +348,25 @@ export const refreshCandidateMatches = internalMutation({
           };
           if (existing) {
             await ctx.db.patch(existing._id, fields);
+            matchesUpdated++;
           } else {
             await ctx.db.insert("candidateJobMatches", { userId: args.userId, jobId: job._id, ...fields });
+            matchesInserted++;
           }
-          matchesWritten++;
         }
 
-        // Prune rows for jobs no longer eligible, re-checking each row's OWN
-        // referenced job directly (ctx.db.get), NOT merely "was it in this
-        // run's scanned/capped pool" - a job that is still genuinely active
-        // but simply fell outside the MAX_JOBS_FOR_MATCHING window this run
-        // must never be pruned just because of that cap, or a previously
-        // valid recommendation would regress for a reason unrelated to the
-        // job's own eligibility. Jobs rescored above are skipped here
-        // (already known-eligible, already handled).
+        // --- Prune every existing row not selected this run -----------------------
+        // Whatever the reason - the job is no longer eligible at all, it no
+        // longer meets the configured score/isMatch rule, or it qualified
+        // but fell outside the configured cap after sorting - all three are
+        // prune conditions per this milestone's own instruction. Scoped
+        // entirely to this candidate's own rows (by_user, already the index
+        // existingMatches was read from); the shared `jobs` row itself is
+        // never touched, deleted, or deactivated here.
         for (const row of existingMatches) {
-          if (rescoredJobIds.has(row.jobId)) continue;
-          const job = await ctx.db.get(row.jobId);
-          const stillEligible = !!job && isJobEligible(job, today);
-          if (!stillEligible) {
-            await ctx.db.delete(row._id);
-            matchesPruned++;
-          }
+          if (selectedJobIds.has(row.jobId)) continue;
+          await ctx.db.delete(row._id);
+          matchesPruned++;
         }
 
         // Store the computed version on the profile itself too (D1's
@@ -253,9 +382,20 @@ export const refreshCandidateMatches = internalMutation({
       console.error(`candidate matching (${args.trigger}) failed for user ${args.userId} -`, errorMessage);
     }
 
+    // Kept at its original meaning (total rows actually inserted or
+    // patched) for backward compatibility with any existing reader of this
+    // field (e.g. runDailyMatchingCycle, which only aggregates
+    // matchesWritten/matchesPruned and is intentionally left unmodified -
+    // see JOB_MATCHING_P2_IMPLEMENTATION_PROGRESS.md).
+    const matchesWritten = matchesInserted + matchesUpdated;
+
     // Mirrors convex/jobSyncRunner.ts's own status determination: "failed"
     // only when the error left nothing useful behind; "partial" when some
-    // writes/prunes happened before the error; "success" otherwise.
+    // writes/prunes happened before the error; "success" otherwise. P2
+    // deliberately leaves this exact condition unchanged (matchesSkipped is
+    // NOT added to it) - preserving P0/P1's existing status semantics takes
+    // priority over the (debatable) case of a run that only ever skipped
+    // already-correct rows before erroring.
     const status: "success" | "partial" | "failed" = errorMessage
       ? matchesWritten > 0 || matchesPruned > 0
         ? "partial"
@@ -267,11 +407,23 @@ export const refreshCandidateMatches = internalMutation({
       status,
       candidatesProcessed,
       matchesWritten,
+      matchesInserted,
+      matchesUpdated,
+      matchesSkipped,
       matchesPruned,
       ...(errorMessage ? { errorMessage } : {}),
     });
 
-    return { status, candidatesProcessed, matchesWritten, matchesPruned, errorMessage };
+    return {
+      status,
+      candidatesProcessed,
+      matchesWritten,
+      matchesInserted,
+      matchesUpdated,
+      matchesSkipped,
+      matchesPruned,
+      errorMessage,
+    };
   },
 });
 
@@ -282,12 +434,14 @@ export const refreshCandidateMatches = internalMutation({
 // the admin session token itself (api.admin.VerifySession) before doing
 // anything, rather than trusting whatever already checked the token on the
 // way in. The actual matching logic stays in the `internalMutation` above,
-// which is NOT exported to the client in any form - this action is the only
-// way to reach it from outside Convex, exactly mirroring how
-// AdminSyncHimalayas is the only way to reach syncHimalayas(). There is no
-// candidate-facing entry point anywhere in this file: an ordinary signed-in
-// user has no token that VerifySession will accept, so no candidate can
-// trigger a refresh for themselves or anyone else through this action.
+// which is NOT exported to the client in any form - this action (and, as of
+// P4, RefreshMyCandidateMatches below) are the only ways to reach it from
+// outside Convex, exactly mirroring how AdminSyncHimalayas is the only way
+// to reach syncHimalayas(). This action itself still has no candidate-facing
+// entry point: an ordinary signed-in user has no admin token that
+// VerifySession will accept, so no candidate can trigger a refresh for
+// themselves or anyone else through THIS action - see RefreshMyCandidateMatches
+// for the candidate-facing counterpart P4 added.
 //
 // Trigger-value note (see PERSONALIZED_JOB_DISCOVERY_IMPLEMENTATION_PROGRESS.md
 // for the full discussion): candidateMatchRuns.trigger only supports
@@ -306,6 +460,44 @@ export const AdminRefreshCandidateMatches = action({
   handler: async (ctx, args): Promise<RefreshCandidateMatchesResult> => {
     const session = await ctx.runQuery(api.admin.VerifySession, { token: args.token });
     if (!session) throw new Error("Unauthorized");
+    return await ctx.runMutation(internal.jobDiscovery.refreshCandidateMatches, {
+      userId: args.userId,
+      trigger: "profile_update",
+    });
+  },
+});
+
+// --- Candidate-facing manual trigger (P4) ---------------------------------------
+//
+// Lets the "Check for New Jobs" button (app/(routes)/jobs/page.tsx, via
+// app/api/jobs/check-new/route.ts) refresh the clicking candidate's own
+// recommendations once provider synchronization has finished, instead of
+// leaving them to find out only on their next profile edit or the next
+// daily cron tick. Deliberately an `action` wrapper around the same
+// `internalMutation` above, exactly like AdminRefreshCandidateMatches,
+// rather than exposing refreshCandidateMatches itself as a public mutation -
+// a public mutation would be callable directly from any connected browser
+// client (not only from this app's own server-side API routes), which is a
+// materially larger exposure than this action, even though this app's
+// per-user ownership checks are already only as strong as GetJobsForUser's/
+// GetCandidateMatches'/CreateProfile's own (no working Convex-Clerk identity
+// verification exists anywhere in this app today - see
+// convex/jobDiscovery.ts's own GetCandidateMatches comment and
+// JOB_DISCOVERY_CURRENT_LOGIC.md section 1 point 7 for the full, previously
+// accepted record of that risk). The caller (check-new/route.ts) resolves
+// `userId` server-side from the signed-in Clerk session via the existing
+// utils/profileAuth.ts:resolveProfileUserId() - the same mechanism
+// app/api/profile/* already uses - never from a client-supplied value.
+//
+// Same trigger-value approximation as AdminRefreshCandidateMatches above,
+// for the same reason (candidateMatchRuns.trigger only supports
+// "profile_update" | "daily_cycle" - no schema change was made for this
+// milestone): a manual button click is, honestly, neither, but
+// "profile_update" is the single-candidate shape that actually matches this
+// call's own `userId`-scoped nature, unlike "daily_cycle."
+export const RefreshMyCandidateMatches = action({
+  args: { userId: v.id("UserTable") },
+  handler: async (ctx, args): Promise<RefreshCandidateMatchesResult> => {
     return await ctx.runMutation(internal.jobDiscovery.refreshCandidateMatches, {
       userId: args.userId,
       trigger: "profile_update",
@@ -694,21 +886,32 @@ export const triggerInitialJobSearch = internalAction({
   // Explicit return type for the same reason as beginDailyMatchRun above -
   // this function self-references refreshCandidateMatches in this module.
   handler: async (ctx, args): Promise<void> => {
-    try {
-      await syncHimalayas(ctx);
-    } catch (err) {
-      console.error(
-        "initial job search (profile completion): Himalayas sync rejected/failed -",
-        err instanceof Error ? err.message : err
-      );
-    }
-    try {
-      await syncJobicy(ctx);
-    } catch (err) {
-      console.error(
-        "initial job search (profile completion): Jobicy sync rejected/failed -",
-        err instanceof Error ? err.message : err
-      );
+    // (P0) This is an automatic trigger (profile completion, not a button
+    // click), so Job Matching Configuration's automaticJobSyncEnabled gates
+    // it - same rule convex/http.ts's n8n gateway enforces, applied here for
+    // the other automatic entry point. When disabled, this still matches
+    // the candidate against whatever is already in `jobs` (reusing stored
+    // jobs rather than skipping matching entirely).
+    const config = await ctx.runQuery(internal.jobMatchingConfig.GetEffectiveConfig, {});
+    if (config.automaticJobSyncEnabled) {
+      try {
+        await syncHimalayas(ctx);
+      } catch (err) {
+        console.error(
+          "initial job search (profile completion): Himalayas sync rejected/failed -",
+          err instanceof Error ? err.message : err
+        );
+      }
+      try {
+        await syncJobicy(ctx);
+      } catch (err) {
+        console.error(
+          "initial job search (profile completion): Jobicy sync rejected/failed -",
+          err instanceof Error ? err.message : err
+        );
+      }
+    } else {
+      console.log("initial job search (profile completion): automatic job synchronization is disabled - matching against already-stored jobs only.");
     }
     await ctx.runMutation(internal.jobDiscovery.refreshCandidateMatches, {
       userId: args.userId,

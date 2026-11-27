@@ -331,7 +331,12 @@ export default defineSchema({
       // upstream. Unset for admin-entered rows.
       lastFetchedAt: v.optional(v.number()),
       // Cross-provider duplicate-detection key (see JOB_SEARCH_TECHNICAL_DESIGN.md
-      // section 7). Unset until a normalization step computes it.
+      // section 7). Computed at write time for every row since P5 - by
+      // provider normalization (himalayasSync.ts/jobicy.ts) for a synced
+      // row, and by AdminUpsertJob (convex/Jobs.ts) for an admin-created
+      // one. Left unset only when the company/title genuinely can't
+      // produce a usable key, or on a row written before this guarantee
+      // existed (see convex/jobSyncShared.ts's one-time backfillDedupeKeys).
       dedupeKey: v.optional(v.string()),
       // Set when a sync pass notices a previously-seen provider listing is no
       // longer present upstream. Distinct from the admin's own `active`
@@ -342,9 +347,28 @@ export default defineSchema({
       // (J2) For a future sync to look up "do we already have this provider's
       // listing?" before inserting a duplicate. Unused until that sync exists.
       .index('by_provider_external_id', ['provider', 'externalId'])
-      // (J2) For a future cross-provider duplicate check. Unused until a
-      // normalization step starts populating dedupeKey.
-      .index('by_dedupe_key', ['dedupeKey']),
+      // (P9) Replaces the former plain `by_dedupe_key` index (removed - no
+      // longer used by anything, see convex/jobSyncShared.ts's rewritten
+      // suppressDuplicatesForKey). JOB_SYNC_P8_ROOT_CAUSE_INVESTIGATION_REPORT.md
+      // confirmed the old index's own query (collect() over EVERY row ever
+      // sharing a dedupeKey, active or not) was the exact cause of Convex's
+      // 16MB-per-execution read-limit failures, because nothing ever
+      // deletes a suppressed/inactive duplicate - a dedupe-key group can
+      // only grow, never shrink. This index lets suppressDuplicatesForKey
+      // read only the CURRENTLY ACTIVE rows sharing a key - by that
+      // function's own invariant (at most one active row survives each
+      // call), this stays bounded regardless of how large the historical,
+      // inactive backlog for that key has grown.
+      .index('by_dedupe_key_active', ['dedupeKey', 'active'])
+      // (P9) Lets suppressDuplicatesForKey cheaply find an admin-created
+      // row (provider absent/undefined) sharing a dedupeKey REGARDLESS of
+      // its active status, in O(1) - required to preserve the existing
+      // "admin always wins, active or not" precedence rule (J5 Phase 5)
+      // without falling back to an unbounded scan for that one check.
+      // Admin-created rows sharing a provider-sourced job's dedupeKey are
+      // rare by nature (deliberate, manual creation) - this index is cheap
+      // regardless of how large the provider-side collision groups get.
+      .index('by_dedupe_key_provider', ['dedupeKey', 'provider']),
 
     // (J2) Audit trail for future external job synchronization runs (one row
     // per provider per sync pass). Nothing writes to this table yet - no
@@ -359,9 +383,64 @@ export default defineSchema({
       jobsInserted: v.optional(v.number()),
       jobsUpdated: v.optional(v.number()),
       jobsExpired: v.optional(v.number()),
+      // (P9) A job that reached upsertProviderJobsBatch but could not be
+      // persisted - isolated there (never aborts the batch) rather than
+      // being folded into a thrown, run-aborting error as it was before
+      // P9. Optional for the same reason every other counter here already
+      // is (a run recorded before P9 has no value for this field).
+      persistenceFailed: v.optional(v.number()),
       errorMessage: v.optional(v.string()),
     })
       .index('by_provider_started', ['provider', 'startedAt']),
+
+    // (P5) Persistent progress marker for the one-time, resumable dedupeKey
+    // backfill (convex/jobSyncShared.ts:backfillDedupeKeys). Singleton
+    // table - exactly one row is expected, same `rows[0]`-is-the-record
+    // convention as AdminTable/JobMatchingConfigTable. Deliberately NOT an
+    // in-memory flag (the migration-completion requirement is explicit:
+    // "must survive application restarts and deployments") - this table is
+    // the one, durable source of truth for how far that one-time walk of
+    // the `jobs` table has gotten, and whether it's finished.
+    jobDedupeBackfillState: defineTable({
+      // Convex pagination cursor to resume from. Absent means "start from
+      // the beginning" (true before the first run, and again briefly
+      // between this row not existing and its first insert).
+      cursor: v.optional(v.string()),
+      // True once every row that existed when this walk began has been
+      // checked at least once. From that point on, backfillDedupeKeys does
+      // a single indexed row read and returns - never a table scan again,
+      // because every row written from then on already carries its own
+      // dedupeKey at write time (provider normalization; AdminUpsertJob as
+      // of P5) - see that function's own header comment for the full
+      // reasoning.
+      complete: v.boolean(),
+      processedCount: v.number(),
+      backfilledCount: v.number(),
+      updatedAt: v.number(),
+    }),
+
+    // (P11) Per-provider progress marker for the bounded, perpetually-
+    // cycling skill backfill (convex/jobSyncShared.ts:backfillProviderSkills).
+    // One row per provider, found via the by_provider index - NOT a
+    // singleton like jobDedupeBackfillState above, and deliberately has no
+    // `complete` field: unlike the one-time dedupeKey backfill, this
+    // operation can never permanently finish (the skill vocabulary it
+    // checks against keeps growing as candidates edit their own profiles),
+    // so it cycles through each provider's rows in bounded pages
+    // indefinitely rather than stopping once a full pass is done - see
+    // that function's own header comment for the full reasoning.
+    providerSkillBackfillState: defineTable({
+      provider: v.string(),
+      // Absent means "the next call starts a fresh cycle from the
+      // beginning" - true both before the first call ever, and again every
+      // time a cycle completes (page.isDone), never a one-time completion
+      // flag.
+      cursor: v.optional(v.string()),
+      processedCount: v.number(),
+      backfilledCount: v.number(),
+      updatedAt: v.number(),
+    })
+      .index('by_provider', ['provider']),
 
     // (D1 - Personalized Job Discovery schema groundwork only) One row per
     // (candidate, job) recommendation. Nothing writes or reads this table
@@ -420,11 +499,70 @@ export default defineSchema({
       finishedAt: v.optional(v.number()),
       status: v.union(v.literal('running'), v.literal('success'), v.literal('partial'), v.literal('failed')),
       candidatesProcessed: v.optional(v.number()),
+      // matchesWritten keeps its original meaning (every row actually
+      // inserted or patched - matchesInserted + matchesUpdated) for
+      // backward compatibility with anything already reading it. The three
+      // fields below (P2) break that same total down further; all three
+      // are optional so an older row written before P2 existed simply omits
+      // them rather than needing a migration.
       matchesWritten: v.optional(v.number()),
+      matchesInserted: v.optional(v.number()),
+      matchesUpdated: v.optional(v.number()),
+      // A selected, qualifying recommendation whose meaningful fields
+      // (matchScore/isMatch/matchedSkills/missingSkills/matchReasons)
+      // already matched the stored row exactly - no database write at all
+      // occurred for it. See convex/jobDiscovery.ts's sameRecommendation().
+      matchesSkipped: v.optional(v.number()),
       matchesPruned: v.optional(v.number()),
       errorMessage: v.optional(v.string()),
     })
       .index('by_trigger_started', ['trigger', 'startedAt']),
+
+    // --- Job Matching Configuration (P0) -------------------------------------
+    // Admin-configurable business rules for job matching/discovery, so later
+    // milestones (P1-P7: the 70% persistence threshold, the 75-recommendation
+    // cap, provider pre-insertion filtering, etc. - see
+    // JOB_PERSISTENCE_FILTERING_INVESTIGATION_REPORT.md) can be tuned per
+    // client without a code change or redeploy. Singleton table - exactly one
+    // row is expected to exist at a time (see convex/jobMatchingConfig.ts's
+    // getEffectiveJobMatchingConfig, which falls back to hardcoded defaults
+    // when this table is empty, so every consumer stays safe even before an
+    // admin has ever saved anything here).
+    JobMatchingConfigTable: defineTable({
+      // 0-100 inclusive. Only used as a gate in P1+ - this milestone stores
+      // and validates it, nothing yet filters with it.
+      minimumMatchScore: v.number(),
+      // When true, a job must also satisfy matchJob()'s existing isMatch
+      // (score + relevance gate), not just the raw score - see
+      // JOB_PERSISTENCE_FILTERING_INVESTIGATION_REPORT.md section C for why
+      // this is a real, open ambiguity in "match score of 70% or higher."
+      requireIsMatch: v.boolean(),
+      maxRecommendationsPerCandidate: v.union(v.literal(60), v.literal(70), v.literal(75)),
+      recommendationSortOrder: v.union(v.literal('score_desc'), v.literal('newest_first')),
+      reevaluateAfterProfileUpdate: v.boolean(),
+      // The only setting enforced with real effect in P0 (see
+      // convex/http.ts and convex/jobDiscovery.ts:triggerInitialJobSearch) -
+      // every other field here is stored/validated only, consumed starting
+      // in a later milestone.
+      automaticJobSyncEnabled: v.boolean(),
+      updatedAt: v.number(),
+      updatedBy: v.optional(v.string()),
+    }),
+
+    // Audit trail for every JobMatchingConfigTable change, one row per
+    // changed field per save (never one for an unchanged field - see
+    // convex/jobMatchingConfig.ts:UpdateJobMatchingConfig). previousValue/
+    // newValue are v.any() because different settings hold different
+    // primitive types (number/boolean/string), mirroring
+    // AdminSettingsTable.value's existing v.any() convention.
+    JobMatchingConfigAuditTable: defineTable({
+      adminUsername: v.string(),
+      settingKey: v.string(),
+      previousValue: v.any(),
+      newValue: v.any(),
+      changedAt: v.number(),
+    })
+      .index('by_changedAt', ['changedAt']),
 
     // Practice Coach: one row per "Generate Video" call, recording what was sent
     // to the N8N webhook and the response it returned.

@@ -17,6 +17,7 @@ import {
   Languages,
   ListChecks,
   BriefcaseBusiness,
+  Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +42,7 @@ const MENU: MenuItem[] = [
       { name: "General Settings", path: "/admin/settings/general", icon: SlidersHorizontal },
       { name: "Languages", path: "/admin/settings/language", icon: Languages },
       { name: "Interview Modes", path: "/admin/settings/interview-modes", icon: ListChecks },
+      { name: "Job Matching", path: "/admin/settings/job-matching", icon: Target },
     ],
   },
 ];

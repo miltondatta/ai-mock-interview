@@ -84,6 +84,34 @@ http.route({
     }
     const provider = providerRaw as SupportedProvider;
 
+    // --- Automatic-sync toggle (P0) ---------------------------------------------------
+    // This route is n8n's only entry point (never a human's) - every call
+    // here is, by definition, "automatic" synchronization, so this is
+    // exactly where Job Matching Configuration's automaticJobSyncEnabled
+    // must be enforced (the admin panel's own manual sync buttons and the
+    // candidate-facing "Check for New Jobs" button call syncHimalayas/
+    // syncJobicy directly and are untouched by this check - see
+    // JOB_PERSISTENCE_FILTERING_INVESTIGATION_REPORT.md and
+    // convex/jobMatchingConfig.ts). Responds 200 with ok: true (not an
+    // error status) so n8n's own "OK?" nodes (which gate solely on
+    // $json.ok === true) treat a deliberately-disabled sync as a normal,
+    // non-retried completion rather than a failure.
+    const config = await ctx.runQuery(internal.jobMatchingConfig.GetEffectiveConfig, {});
+    if (!config.automaticJobSyncEnabled) {
+      return jsonResponse(200, {
+        provider,
+        ok: true,
+        status: "skipped",
+        reason: "Automatic job synchronization is disabled in Job Matching Configuration.",
+        jobsFetched: 0,
+        jobsInserted: 0,
+        jobsUpdated: 0,
+        jobsExpired: 0,
+        skipped: 0,
+        runId: null,
+      });
+    }
+
     // --- Invoke the existing, unduplicated sync entry point --------------------------
     try {
       const result = provider === "himalayas" ? await syncHimalayas(ctx) : await syncJobicy(ctx);

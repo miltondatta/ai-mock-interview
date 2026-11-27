@@ -15,6 +15,9 @@ import {
 // comment for why that cycle, though runtime-safe, broke TypeScript's
 // return-type inference for Convex queries project-wide once introduced.
 import { computeProfileCompletion, computeProfileVersion, type ProfileCompletion, type ProfileCompletionField } from "./profileMatchingShared";
+// P4: the one, reusable P0 config-access mechanism - this file never reads
+// JobMatchingConfigTable directly or keeps its own copy of the defaults.
+import { getEffectiveJobMatchingConfig } from "./jobMatchingConfig";
 
 // Professional Profile + User Onboarding backend (M1).
 //
@@ -567,14 +570,28 @@ export const GetOnboardingStatus = query({
 //     the existing n8n 6-hourly schedule for fresh jobs, exactly as
 //     instructed ("rest job searching trigger will be done according to
 //     the cron job").
+// P4 return shape note: `completeAfter` was added so CreateProfile/
+// UpdateProfile can decide, without a second computeProfileCompletion()
+// call of their own, whether THIS save is worth an external provider
+// search (only ever true when the profile ends up complete - nothing to
+// usefully search for otherwise) as opposed to only a rescore/prune against
+// jobs already stored. `shouldTriggerJobSearch`'s own "fires at most once
+// per candidate" meaning (see its own comment above) is UNCHANGED by this -
+// it still means exactly "this save is the first time ever this profile
+// became complete," nothing more; P4 widens which saves trigger an external
+// search beyond that one case (see the callers), but does so using
+// `completeAfter`, not by changing what `shouldTriggerJobSearch` means.
 function decideMatchingRefresh(
     existing: ProfileDoc | null,
     patch: ProfilePatch
-): { shouldRefreshMatches: boolean; shouldTriggerJobSearch: boolean } {
+): { shouldRefreshMatches: boolean; shouldTriggerJobSearch: boolean; completeAfter: boolean } {
     const merged: Partial<ProfileDoc> = { ...(existing ?? {}), ...patch };
     const newVersion = computeProfileVersion(merged);
     if (newVersion === existing?.profileVersion) {
-        return { shouldRefreshMatches: false, shouldTriggerJobSearch: false }; // nothing matching-relevant changed
+        // Nothing matching-relevant changed - completeAfter still reflects
+        // the profile's actual (unchanged) completion state, since a caller
+        // may still want to know it even when shouldRefreshMatches is false.
+        return { shouldRefreshMatches: false, shouldTriggerJobSearch: false, completeAfter: computeProfileCompletion(merged).isComplete };
     }
 
     patch.profileVersion = newVersion;
@@ -594,7 +611,52 @@ function decideMatchingRefresh(
     return {
         shouldRefreshMatches: completeBefore || completeAfter,
         shouldTriggerJobSearch: !completeBefore && completeAfter,
+        completeAfter,
     };
+}
+
+// P4: the one place CreateProfile and UpdateProfile both call to actually
+// schedule whatever decideMatchingRefresh() decided, now gated by the P0
+// `reevaluateAfterProfileUpdate` toggle. Shared so the two mutations can't
+// drift into applying this gate differently.
+//
+// When reevaluateAfterProfileUpdate is disabled: nothing is scheduled here
+// at all - no automatic rescore, no automatic external search. The
+// candidate can still always use the existing, untouched manual "Check for
+// New Jobs" button (app/api/jobs/check-new/route.ts) to get fresh results
+// on demand; this function only controls what happens automatically on a
+// profile save.
+//
+// When enabled and shouldRefreshMatches is true: this save ending up
+// COMPLETE (completeAfter) is what decides whether an external search is
+// worth running at all, not whether this is the candidate's very FIRST
+// completion. This deliberately widens triggerInitialJobSearch's use beyond
+// the original D3 design (which only ever called it on that first
+// transition) - P4's own "reconsider previously rejected external jobs"
+// requirement needs exactly this: a LATER relevant edit (e.g. adding a
+// skill to an already-complete profile) is precisely the case where a
+// provider job that didn't qualify before might qualify now, and that can
+// only be discovered by searching again, not by only rescoring whatever is
+// already stored. triggerInitialJobSearch's own, separate
+// automaticJobSyncEnabled check (P0, convex/jobDiscovery.ts) decides
+// whether that search actually reaches the providers or degrades to a
+// stored-jobs-only rescore - this function never duplicates that check.
+// A save that regresses to incomplete (completeAfter false) has nothing to
+// usefully search for - refreshCandidateMatches alone (which prunes every
+// existing row for an incomplete profile on its own) is scheduled instead.
+async function scheduleMatchingRefresh(
+    ctx: MutationCtx,
+    userId: Id<'UserTable'>,
+    decision: { shouldRefreshMatches: boolean; completeAfter: boolean }
+): Promise<void> {
+    if (!decision.shouldRefreshMatches) return;
+    const config = await getEffectiveJobMatchingConfig(ctx);
+    if (!config.reevaluateAfterProfileUpdate) return;
+    if (decision.completeAfter) {
+        await ctx.scheduler.runAfter(0, internal.jobDiscovery.triggerInitialJobSearch, { userId });
+    } else {
+        await ctx.scheduler.runAfter(0, internal.jobDiscovery.refreshCandidateMatches, { userId, trigger: 'profile_update' });
+    }
 }
 
 // --- Mutations --------------------------------------------------------------
@@ -631,23 +693,13 @@ export const CreateProfile = mutation({
         // BEFORE the write, then scheduled AFTER it commits - neither the
         // matching computation nor the external job search ever runs
         // inside this mutation itself.
-        const { shouldRefreshMatches, shouldTriggerJobSearch } = decideMatchingRefresh(null, patch);
+        const decision = decideMatchingRefresh(null, patch);
         const result = await upsertProfile(ctx, userId, null, patch);
-        if (shouldTriggerJobSearch) {
-            // First-ever completion: refresh the external job pool first,
-            // then match against whatever that search actually finds -
-            // convex/jobDiscovery.ts's triggerInitialJobSearch chains the
-            // matching call itself afterward, so this intentionally does
-            // NOT also schedule refreshCandidateMatches separately here
-            // (doing both would let the fast matching call run against a
-            // still-stale pool before the slower external search finishes).
-            await ctx.scheduler.runAfter(0, internal.jobDiscovery.triggerInitialJobSearch, { userId });
-        } else if (shouldRefreshMatches) {
-            await ctx.scheduler.runAfter(0, internal.jobDiscovery.refreshCandidateMatches, {
-                userId,
-                trigger: 'profile_update',
-            });
-        }
+        // P4: gated by reevaluateAfterProfileUpdate, and (when enabled)
+        // decides sync-vs-rescore-only via completeAfter - see
+        // scheduleMatchingRefresh's own comment for why this is no longer
+        // keyed off shouldTriggerJobSearch alone.
+        await scheduleMatchingRefresh(ctx, userId, decision);
         return result;
     }
 });
@@ -672,21 +724,11 @@ export const UpdateProfile = mutation({
         // one candidate's userId - neither the matching computation nor
         // the external job search ever runs inside this mutation itself,
         // so a save stays fast regardless of job-pool size.
-        const { shouldRefreshMatches, shouldTriggerJobSearch } = decideMatchingRefresh(existing, patch);
+        const decision = decideMatchingRefresh(existing, patch);
         const result = await upsertProfile(ctx, userId, existing, patch);
-        if (shouldTriggerJobSearch) {
-            // First-ever completion via an update (e.g. a profile started
-            // through Settings > Profile rather than CreateProfile) - same
-            // reasoning as CreateProfile above: refresh the external job
-            // pool first, then match, via triggerInitialJobSearch's own
-            // chained call - never both scheduled separately here.
-            await ctx.scheduler.runAfter(0, internal.jobDiscovery.triggerInitialJobSearch, { userId });
-        } else if (shouldRefreshMatches) {
-            await ctx.scheduler.runAfter(0, internal.jobDiscovery.refreshCandidateMatches, {
-                userId,
-                trigger: 'profile_update',
-            });
-        }
+        // P4: see scheduleMatchingRefresh's own comment (CreateProfile uses
+        // the exact same helper, same reasoning).
+        await scheduleMatchingRefresh(ctx, userId, decision);
         return result;
     }
 });

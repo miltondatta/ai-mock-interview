@@ -1,12 +1,14 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight } from "lucide-react";
 import { productSections } from "./data";
+import FeatureMedia from "./FeatureMedia";
 
 export default function ProductShowcase() {
+  const prefersReducedMotion = useReducedMotion();
+
   return (
     <section id="features" className="bg-white py-20 sm:py-28 scroll-mt-16">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -34,31 +36,20 @@ export default function ProductShowcase() {
                 }`}
               >
                 <motion.div
-                  initial={{ opacity: 0, x: section.reverse ? 40 : -40 }}
+                  initial={prefersReducedMotion ? false : { opacity: 0, x: section.reverse ? 40 : -40 }}
                   whileInView={{ opacity: 1, x: 0 }}
                   viewport={{ once: true, amount: 0.3 }}
-                  transition={{ duration: 0.6, ease: "easeOut" }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut" }}
                   className="w-full lg:w-1/2"
                 >
-                  <div className="relative z-0 cursor-zoom-in overflow-hidden rounded-2xl bg-gradient-to-br from-orange-200 via-stone-200 to-orange-100 p-px shadow-xl shadow-stone-900/10 transition-transform duration-300 ease-out hover:z-10 hover:scale-[1.12] hover:shadow-2xl">
-                    <div className="overflow-hidden rounded-[15px] bg-stone-50">
-                      <Image
-                        src={section.imageSrc}
-                        alt={section.imageAlt}
-                        width={section.width}
-                        height={section.height}
-                        unoptimized
-                        className="h-auto w-full object-contain"
-                      />
-                    </div>
-                  </div>
+                  <FeatureMedia images={section.images} />
                 </motion.div>
 
                 <motion.div
-                  initial={{ opacity: 0, x: section.reverse ? -40 : 40 }}
+                  initial={prefersReducedMotion ? false : { opacity: 0, x: section.reverse ? -40 : 40 }}
                   whileInView={{ opacity: 1, x: 0 }}
                   viewport={{ once: true, amount: 0.3 }}
-                  transition={{ duration: 0.6, ease: "easeOut", delay: 0.1 }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.1 }}
                   className="w-full lg:w-1/2"
                 >
                   <span className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-700">
@@ -72,7 +63,7 @@ export default function ProductShowcase() {
                     {section.description}
                   </p>
 
-                  <ul className="mt-6 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+                  <ul className="mt-6 flex flex-col gap-3">
                     {section.features.map((feature) => (
                       <li key={feature} className="flex items-start gap-2.5 text-sm text-stone-700">
                         <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-orange-600" />

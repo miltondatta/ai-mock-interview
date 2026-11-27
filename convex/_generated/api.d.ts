@@ -29,6 +29,7 @@ import type * as himalayasSync from "../himalayasSync.js";
 import type * as http from "../http.js";
 import type * as jobDiscovery from "../jobDiscovery.js";
 import type * as jobMatching from "../jobMatching.js";
+import type * as jobMatchingConfig from "../jobMatchingConfig.js";
 import type * as jobSyncRunner from "../jobSyncRunner.js";
 import type * as jobSyncShared from "../jobSyncShared.js";
 import type * as jobicy from "../jobicy.js";
@@ -64,6 +65,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   jobDiscovery: typeof jobDiscovery;
   jobMatching: typeof jobMatching;
+  jobMatchingConfig: typeof jobMatchingConfig;
   jobSyncRunner: typeof jobSyncRunner;
   jobSyncShared: typeof jobSyncShared;
   jobicy: typeof jobicy;

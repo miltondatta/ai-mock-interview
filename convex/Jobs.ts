@@ -4,6 +4,13 @@ import type { Doc } from "./_generated/dataModel";
 import { requireSession } from "./admin";
 import { computeProfileCompletion } from "./ProfessionalProfile";
 import { matchJob, type MatchResult } from "./jobMatching";
+// P5: the exact same dedupe-key function provider normalization already
+// uses (convex/himalayasSync.ts/jobicy.ts) - reused as-is, never
+// reimplemented, so an admin-created job becomes visible to cross-provider
+// dedup the moment it's saved, instead of only after the next full-table
+// backfill pass. See convex/jobSyncShared.ts's backfillDedupeKeys for the
+// full reasoning this closes.
+import { computeDedupeKey } from "./jobSyncShared";
 
 // Jobs module (M7). Admins post openings from /admin/jobs (session-token
 // guarded, like the other admin functions). Signed-in users read the active
@@ -110,9 +117,12 @@ function cleanJob(args: ObjectType<typeof jobInput>) {
   if (applicationDeadline && !/^\d{4}-\d{2}-\d{2}$/.test(applicationDeadline)) {
     throw new Error("Application deadline must be a valid date.");
   }
+  const title = text(args.title, "Job title", 200, true)!;
+  const company = text(args.company, "Company", 200, true)!;
+  const applyUrlValue = applyUrl(args.applyUrl);
   return stripUndefined({
-    title: text(args.title, "Job title", 200, true)!,
-    company: text(args.company, "Company", 200, true)!,
+    title,
+    company,
     location: text(args.location, "Location", 200),
     workMode: args.workMode,
     employmentType: text(args.employmentType, "Employment type", 50),
@@ -128,8 +138,15 @@ function cleanJob(args: ObjectType<typeof jobInput>) {
     requiredCertifications: certs.length > 0 ? certs : undefined,
     source: text(args.source, "Source", 100),
     applicationDeadline,
-    applyUrl: applyUrl(args.applyUrl),
+    applyUrl: applyUrlValue,
     active: args.active,
+    // P5: computed here, at write time, exactly like a provider's own
+    // normalization step already does - never left for a later backfill
+    // pass to fill in. Recomputed on every save (including an edit to an
+    // existing job), so a title/company/applyUrl change is always
+    // reflected immediately, same as a provider re-sync already does for
+    // its own rows.
+    dedupeKey: computeDedupeKey(company, title, applyUrlValue) || undefined,
   });
 }
 

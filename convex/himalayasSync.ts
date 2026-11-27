@@ -2,7 +2,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
 import { extractSkillsFromDescription, combineSkills, type SkillVocabularyEntry } from "./extractSkills";
-import { computeDedupeKey, stripHtmlToText, type NormalizedProviderJob } from "./jobSyncShared";
+import { computeDedupeKey, stripHtmlToText, truncateDescription, type NormalizedProviderJob } from "./jobSyncShared";
 import { runProviderSync, type ProviderSyncResult } from "./jobSyncRunner";
 
 // Himalayas job-provider sync (J3, extended by J4/J5/J6). See
@@ -148,7 +148,10 @@ export function normalizeHimalayasJob(raw: unknown, vocabulary: readonly SkillVo
     salaryMax: hasUsableSalary ? maxSalary : undefined,
     salaryCurrency: hasUsableSalary ? currency : undefined,
     salaryPeriod: hasUsableSalary ? salaryPeriod : undefined,
-    description: plainDescription ? plainDescription.slice(0, MAX_DESCRIPTION_LENGTH) : undefined,
+    // P9: surrogate-pair-safe truncation (truncateDescription), not a plain
+    // .slice() - see jobSyncShared.ts's own comment on why a plain slice
+    // can produce an unpaired trailing surrogate at exactly this boundary.
+    description: plainDescription ? truncateDescription(plainDescription, MAX_DESCRIPTION_LENGTH) : undefined,
     // Extraction runs on the full, untruncated (but now HTML-stripped)
     // description, so a skill mentioned past the 10,000-char cutoff is
     // still found. Himalayas has no structured skill list of its own (its

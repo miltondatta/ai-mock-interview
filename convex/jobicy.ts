@@ -2,7 +2,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
 import { combineSkills, extractSkillsFromDescription, type SkillVocabularyEntry } from "./extractSkills";
-import { computeDedupeKey, stripHtmlToText, type NormalizedProviderJob } from "./jobSyncShared";
+import { computeDedupeKey, stripHtmlToText, truncateDescription, type NormalizedProviderJob } from "./jobSyncShared";
 import { runProviderSync, type ProviderSyncResult } from "./jobSyncRunner";
 
 // Jobicy job-provider sync (J5, extended by J6). See
@@ -147,7 +147,9 @@ export function normalizeJobicyJob(raw: unknown, vocabulary: readonly SkillVocab
     salaryMax: hasUsableSalary ? maxSalary : undefined,
     salaryCurrency: hasUsableSalary ? currency : undefined,
     salaryPeriod: hasUsableSalary ? salaryPeriod : undefined,
-    description: plainDescription ? plainDescription.slice(0, MAX_DESCRIPTION_LENGTH) : undefined,
+    // P9: surrogate-pair-safe truncation (truncateDescription), not a plain
+    // .slice() - same reasoning as convex/himalayasSync.ts's identical fix.
+    description: plainDescription ? truncateDescription(plainDescription, MAX_DESCRIPTION_LENGTH) : undefined,
     // Extraction runs on the full, untruncated (HTML-stripped) description.
     // Jobicy's `jobIndustry` (e.g. "Sales") is a category tag, not a skill,
     // and `jobLevel` (e.g. "Senior") has no numeric-years field to map into
