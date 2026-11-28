@@ -14,7 +14,7 @@ const outfit = Outfit({
 // });
 
 export const metadata: Metadata = {
-  title: "AI Mock Interview",
+  title: "Arovia",
   description: "Practice job interviews with AI-powered mock interview sessions.",
 };
 

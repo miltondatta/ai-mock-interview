@@ -1,14 +1,15 @@
 import Link from "next/link";
+import AuthAwareLink from "./AuthAwareLink";
 
 const PRODUCT_LINKS = [
   { label: "Features", href: "/#features" },
   { label: "Interview Modes", href: "/#modes" },
-  { label: "Pricing", href: "/upgrade" },
-  { label: "Get Started", href: "/dashboard" },
+  { label: "Pricing", href: "/upgrade", protectedRoute: true },
+  { label: "Get Started", href: "/dashboard", protectedRoute: true },
 ];
 
 const RESOURCE_LINKS = [
-  { label: "How It Works", href: "/how-it-works" },
+  { label: "How It Works", href: "/how-it-works", protectedRoute: true },
   { label: "FAQ", href: "/#faq" },
   { label: "Help / Support", href: "/#contact" },
 ];
@@ -31,13 +32,20 @@ const SOCIALS = [
   { initials: "ig", label: "Instagram" },
 ];
 
-function FooterLink({ label, href }: { label: string; href: string }) {
+function FooterLink({ label, href, protectedRoute }: { label: string; href: string; protectedRoute?: boolean }) {
   const isAnchor = href.startsWith("#");
   if (isAnchor) {
     return (
       <a href={href} className="text-sm text-white/50 transition-colors hover:text-white">
         {label}
       </a>
+    );
+  }
+  if (protectedRoute) {
+    return (
+      <AuthAwareLink href={href} className="text-sm text-white/50 transition-colors hover:text-white">
+        {label}
+      </AuthAwareLink>
     );
   }
   return (
@@ -47,7 +55,13 @@ function FooterLink({ label, href }: { label: string; href: string }) {
   );
 }
 
-function FooterColumn({ title, links }: { title: string; links: { label: string; href: string }[] }) {
+function FooterColumn({
+  title,
+  links,
+}: {
+  title: string;
+  links: { label: string; href: string; protectedRoute?: boolean }[];
+}) {
   return (
     <div>
       <h4 className="text-sm font-semibold text-white">{title}</h4>

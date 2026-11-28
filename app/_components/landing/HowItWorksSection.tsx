@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { howItWorksSteps } from "./data";
+import AuthAwareLink from "./AuthAwareLink";
 
 export default function HowItWorksSection() {
   return (
@@ -39,12 +39,12 @@ export default function HowItWorksSection() {
         </div>
 
         <div className="mt-12 text-center">
-          <Link
+          <AuthAwareLink
             href="/how-it-works"
             className="text-sm font-semibold text-orange-700 underline-offset-4 hover:underline"
           >
             Read the full walkthrough →
-          </Link>
+          </AuthAwareLink>
         </div>
       </div>
     </section>

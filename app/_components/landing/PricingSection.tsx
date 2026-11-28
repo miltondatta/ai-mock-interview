@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Check } from "lucide-react";
 import { Show, SignUpButton } from "@clerk/nextjs";
 import { pricingPlans } from "./data";
+import AuthAwareLink from "./AuthAwareLink";
 
 export default function PricingSection() {
   return (
@@ -87,9 +88,9 @@ export default function PricingSection() {
                 )}
 
                 {plan.action === "upgrade" && (
-                  <Link href="/upgrade" className={`mt-8 rounded-xl px-5 py-3 text-center text-sm font-semibold transition-colors ${buttonClass}`}>
+                  <AuthAwareLink href="/upgrade" className={`mt-8 rounded-xl px-5 py-3 text-center text-sm font-semibold transition-colors ${buttonClass}`}>
                     {plan.cta}
-                  </Link>
+                  </AuthAwareLink>
                 )}
 
                 {plan.action === "contact" && (

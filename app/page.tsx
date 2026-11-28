@@ -1,4 +1,5 @@
 import Navbar from "./_components/landing/Navbar";
+import BrandStatement from "./_components/landing/BrandStatement";
 import HeroSection from "./_components/landing/HeroSection";
 import ProductShowcase from "./_components/landing/ProductShowcase";
 import HowItWorksSection from "./_components/landing/HowItWorksSection";
@@ -16,6 +17,7 @@ export default function Home() {
     <div className="min-h-screen w-full bg-white">
       <Navbar />
       <main>
+        <BrandStatement />
         <HeroSection />
         <ProductShowcase />
         <HowItWorksSection />

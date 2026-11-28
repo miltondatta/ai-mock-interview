@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight } from "lucide-react";
 import { productSections } from "./data";
 import FeatureMedia from "./FeatureMedia";
 import { LightboxProvider } from "./Lightbox";
+import AuthAwareLink from "./AuthAwareLink";
 
 export default function ProductShowcase() {
   const prefersReducedMotion = useReducedMotion();
@@ -74,13 +74,13 @@ export default function ProductShowcase() {
                     ))}
                   </ul>
 
-                  <Link
+                  <AuthAwareLink
                     href={section.href}
                     className="mt-8 inline-flex items-center gap-2 rounded-xl bg-stone-900 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-stone-800"
                   >
                     {section.cta}
                     <ArrowRight className="size-4" />
-                  </Link>
+                  </AuthAwareLink>
                 </motion.div>
               </div>
             );

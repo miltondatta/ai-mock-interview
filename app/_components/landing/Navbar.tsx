@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { Menu, X, LayoutDashboard } from "lucide-react";
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 
@@ -34,11 +35,15 @@ export default function Navbar() {
       }`}
     >
       <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <Link href="/#home" className="flex shrink-0 items-center gap-2.5">
-          <img src="/logo.svg" alt="AI Mock Interview logo" className="h-9 w-9" />
-          <span className="text-base font-bold tracking-tight text-stone-900 sm:text-lg">
-            AI Mock Interview
-          </span>
+        <Link href="/#home" className="flex shrink-0 items-center">
+          <Image
+            src="/arovia-logo.png"
+            alt="Arovia"
+            width={1321}
+            height={457}
+            priority
+            className="h-9 w-auto object-contain sm:h-10"
+          />
         </Link>
 
         <div className="hidden items-center gap-1 lg:flex">
