@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight } from "lucide-react";
 import { productSections } from "./data";
 import FeatureMedia from "./FeatureMedia";
+import { LightboxProvider } from "./Lightbox";
 
 export default function ProductShowcase() {
   const prefersReducedMotion = useReducedMotion();
@@ -24,6 +25,7 @@ export default function ProductShowcase() {
           </p>
         </div>
 
+        <LightboxProvider>
         <div className="mt-16 flex flex-col gap-20 sm:mt-20 sm:gap-28">
           {productSections.map((section) => {
             const Icon = section.icon;
@@ -42,7 +44,7 @@ export default function ProductShowcase() {
                   transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut" }}
                   className="w-full lg:w-1/2"
                 >
-                  <FeatureMedia images={section.images} />
+                  <FeatureMedia images={section.images} groupId={section.id} />
                 </motion.div>
 
                 <motion.div
@@ -84,6 +86,7 @@ export default function ProductShowcase() {
             );
           })}
         </div>
+        </LightboxProvider>
       </div>
     </section>
   );

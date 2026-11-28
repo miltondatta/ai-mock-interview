@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useIsLightboxGroupActive, useLightbox } from "./Lightbox";
 
 export interface FeatureMediaImage {
   readonly src: string;
@@ -37,10 +38,19 @@ function MediaFrame({
 }
 
 // A single screenshot, presented large with its own hover scale/elevation.
-function SingleImage({ image }: { image: FeatureMediaImage }) {
+function SingleImage({ image, groupId }: { image: FeatureMediaImage; groupId: string }) {
+  const { openLightbox } = useLightbox();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
   return (
     <MediaFrame aspectRatio={image.width / image.height}>
-      <div className="group absolute inset-0 cursor-zoom-in">
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={`View full-size screenshot: ${image.alt}`}
+        onClick={() => openLightbox(groupId, [image], 0, triggerRef.current)}
+        className="group absolute inset-0 block w-full cursor-zoom-in border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2"
+      >
         <Image
           src={image.src}
           alt={image.alt}
@@ -49,7 +59,7 @@ function SingleImage({ image }: { image: FeatureMediaImage }) {
           sizes="(min-width: 1024px) 50vw, 100vw"
           className="object-contain transition-transform duration-300 ease-out will-change-transform group-hover:scale-[1.06]"
         />
-      </div>
+      </button>
     </MediaFrame>
   );
 }
@@ -58,11 +68,14 @@ function SingleImage({ image }: { image: FeatureMediaImage }) {
 // Auto-advances, pauses on hover/focus, supports manual prev/next and
 // pagination dots, and keeps a fixed frame size so the surrounding layout
 // never shifts between slides.
-function ImageCarousel({ images }: { images: readonly FeatureMediaImage[] }) {
+function ImageCarousel({ images, groupId }: { images: readonly FeatureMediaImage[]; groupId: string }) {
   const [index, setIndex] = useState(0);
   const [direction, setDirection] = useState(1);
   const [isPaused, setIsPaused] = useState(false);
   const prefersReducedMotion = useReducedMotion();
+  const { openLightbox } = useLightbox();
+  const isLightboxActive = useIsLightboxGroupActive(groupId);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const total = images.length;
 
   const goTo = useCallback(
@@ -76,13 +89,13 @@ function ImageCarousel({ images }: { images: readonly FeatureMediaImage[] }) {
   // Autoplay. Recreated only when pause/reduced-motion/image-count changes -
   // never torn down and rebuilt on every tick - so the interval can't leak.
   useEffect(() => {
-    if (isPaused || prefersReducedMotion || total <= 1) return;
+    if (isPaused || isLightboxActive || prefersReducedMotion || total <= 1) return;
     const id = setInterval(() => {
       setDirection(1);
       setIndex((prev) => (prev + 1) % total);
     }, AUTOPLAY_MS);
     return () => clearInterval(id);
-  }, [isPaused, prefersReducedMotion, total]);
+  }, [isPaused, isLightboxActive, prefersReducedMotion, total]);
 
   const slideVariants = {
     enter: (dir: number) => ({ x: dir > 0 ? 36 : -36, opacity: 0 }),
@@ -102,15 +115,19 @@ function ImageCarousel({ images }: { images: readonly FeatureMediaImage[] }) {
         onBlur={() => setIsPaused(false)}
       >
         <AnimatePresence initial={false} custom={direction} mode="wait">
-          <motion.div
+          <motion.button
             key={index}
+            ref={triggerRef}
+            type="button"
+            aria-label={`View full-size screenshot ${index + 1} of ${total}: ${current.alt}`}
+            onClick={() => openLightbox(groupId, images, index, triggerRef.current)}
             custom={direction}
             variants={slideVariants}
             initial={prefersReducedMotion ? false : "enter"}
             animate="center"
             exit={prefersReducedMotion ? undefined : "exit"}
             transition={{ duration: prefersReducedMotion ? 0 : 0.4, ease: "easeOut" }}
-            className="absolute inset-0 cursor-zoom-in"
+            className="absolute inset-0 block w-full cursor-zoom-in border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2"
           >
             <Image
               src={current.src}
@@ -120,7 +137,7 @@ function ImageCarousel({ images }: { images: readonly FeatureMediaImage[] }) {
               sizes="(min-width: 1024px) 50vw, 100vw"
               className="object-contain transition-transform duration-300 ease-out will-change-transform hover:scale-[1.06]"
             />
-          </motion.div>
+          </motion.button>
         </AnimatePresence>
 
         {total > 1 && (
@@ -163,7 +180,13 @@ function ImageCarousel({ images }: { images: readonly FeatureMediaImage[] }) {
   );
 }
 
-export default function FeatureMedia({ images }: { images: readonly FeatureMediaImage[] }) {
-  if (images.length === 1) return <SingleImage image={images[0]} />;
-  return <ImageCarousel images={images} />;
+export default function FeatureMedia({
+  images,
+  groupId,
+}: {
+  images: readonly FeatureMediaImage[];
+  groupId: string;
+}) {
+  if (images.length === 1) return <SingleImage image={images[0]} groupId={groupId} />;
+  return <ImageCarousel images={images} groupId={groupId} />;
 }
